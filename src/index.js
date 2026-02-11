@@ -697,11 +697,14 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
     }
 
     const embedUrl = getWidgetEmbedUrl(req);
+    const cacheTag = encodeURIComponent(String(publicConfig.updatedAt || Date.now()));
+    const embedUrlWithCache = `${embedUrl}${embedUrl.includes("?") ? "&" : "?"}cfg=${cacheTag}`;
 
     const firebasePublic = getPublicFirebaseConfig();
     const script = `
 (function () {
   window.LEADWIDGET_CLIENT_ID = ${JSON.stringify(publicConfig.clientId)};
+  window.LEADWIDGET_WIDGET_ID = ${JSON.stringify(publicConfig.widgetId)};
   window.LEADWIDGET_CONFIG = Object.assign({}, window.LEADWIDGET_CONFIG || {}, {
     clientId: ${JSON.stringify(publicConfig.clientId)},
     widgetId: ${JSON.stringify(publicConfig.widgetId)},
@@ -719,7 +722,7 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
   var s = document.createElement("script");
   s.id = id;
   s.async = true;
-  s.src = ${JSON.stringify(embedUrl)};
+  s.src = ${JSON.stringify(embedUrlWithCache)};
   (document.head || document.body || document.documentElement).appendChild(s);
 })();
 `;
