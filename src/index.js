@@ -95,6 +95,30 @@ async function getWidgetConfigByIdentity(widgetId) {
 
 function mapWidgetToPublicConfig(widgetData, profileData = {}, identity) {
   const fallbackWidgetId = widgetData?.widget_id || widgetData?.id || identity;
+  let testimonials = [];
+  if (typeof widgetData?.testimonials_json === "string" && widgetData.testimonials_json.trim()) {
+    try {
+      const parsed = JSON.parse(widgetData.testimonials_json);
+      if (Array.isArray(parsed)) testimonials = parsed;
+    } catch {
+      testimonials = [];
+    }
+  } else if (Array.isArray(widgetData?.testimonials)) {
+    testimonials = widgetData.testimonials;
+  }
+
+  const teaserMessages = Array.isArray(widgetData?.teaser_messages)
+    ? widgetData.teaser_messages
+    : (typeof widgetData?.teaser_messages === "string"
+      ? widgetData.teaser_messages.split("\n").map((v) => v.trim()).filter(Boolean)
+      : []);
+
+  const quickReplies = Array.isArray(widgetData?.quick_replies)
+    ? widgetData.quick_replies
+    : (typeof widgetData?.quick_replies === "string"
+      ? widgetData.quick_replies.split("\n").map((v) => v.trim()).filter(Boolean)
+      : []);
+
   return {
     clientId: widgetData?.user_id || identity,
     widgetId: fallbackWidgetId,
@@ -111,8 +135,9 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity) {
     exitIntentTitle: widgetData?.exit_intent_title || "Espera!",
     exitIntentDescription: widgetData?.exit_intent_description || "Tienes alguna consulta antes de salir?",
     exitIntentCta: widgetData?.exit_intent_cta || "Chatear ahora",
-    teaserMessages: Array.isArray(widgetData?.teaser_messages) ? widgetData.teaser_messages : [],
-    quickReplies: Array.isArray(widgetData?.quick_replies) ? widgetData.quick_replies : [],
+    teaserMessages,
+    quickReplies,
+    testimonials,
     launcherIcon: widgetData?.launcher_icon || "",
     hideBranding: widgetData?.hide_branding === true,
     ai_enabled: widgetData?.ai_enabled === true,
