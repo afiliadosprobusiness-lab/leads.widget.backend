@@ -416,8 +416,9 @@ app.post("/api/chat", async (req, res) => {
       throw new Error("Empty response from OpenAI");
     }
 
+    const shouldBlockCommand = /\{?\s*block[_\s-]?user\s*\}?/i.test(aiResponse);
     const shouldBlock =
-      aiResponse.includes("block_user") ||
+      shouldBlockCommand ||
       aiResponse.includes("Security Violation Detected") ||
       aiResponse.includes("I cannot help with that") ||
       aiResponse.includes("no puedo ayudar con eso");
