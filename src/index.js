@@ -75,6 +75,13 @@ function getWidgetEmbedUrl(req) {
   return "https://whatsapp-leads-peru.vercel.app/widget-embed.js";
 }
 
+function getPublicFirebaseConfig() {
+  return {
+    projectId: (process.env.FIREBASE_PUBLIC_PROJECT_ID || "leads-widget").trim(),
+    apiKey: (process.env.FIREBASE_PUBLIC_API_KEY || "AIzaSyCXNFoeg1nrYcFHzU9TEKNnDPg1mHU3_tA").trim(),
+  };
+}
+
 async function getWidgetConfigByIdentity(widgetId) {
   let q = await firestore.collection("widget_configs").where("widget_id", "==", widgetId).limit(1).get();
   if (q.empty) {
@@ -84,6 +91,40 @@ async function getWidgetConfigByIdentity(widgetId) {
 
   const doc = q.docs[0];
   return { id: doc.id, ...doc.data() };
+}
+
+function mapWidgetToPublicConfig(widgetData, profileData = {}, identity) {
+  const fallbackWidgetId = widgetData?.widget_id || widgetData?.id || identity;
+  return {
+    clientId: widgetData?.user_id || identity,
+    widgetId: fallbackWidgetId,
+    businessName: widgetData?.business_name || profileData?.business_name || "LeadWidget",
+    primaryColor: widgetData?.primary_color || "#00C185",
+    whatsappDestination: widgetData?.whatsapp_destination || profileData?.whatsapp_number || "",
+    language: widgetData?.language || "es",
+    welcomeMessage: widgetData?.welcome_message || "Hola! Soy tu asistente virtual.",
+    template: widgetData?.template || "general",
+    chatPlaceholder: widgetData?.chat_placeholder || "Escribe tu mensaje...",
+    vibrationIntensity: widgetData?.vibration_intensity || "soft",
+    triggerDelay: Number(widgetData?.trigger_delay || 5),
+    exitIntentEnabled: widgetData?.trigger_exit_intent !== false,
+    exitIntentTitle: widgetData?.exit_intent_title || "Espera!",
+    exitIntentDescription: widgetData?.exit_intent_description || "Tienes alguna consulta antes de salir?",
+    exitIntentCta: widgetData?.exit_intent_cta || "Chatear ahora",
+    teaserMessages: Array.isArray(widgetData?.teaser_messages) ? widgetData.teaser_messages : [],
+    quickReplies: Array.isArray(widgetData?.quick_replies) ? widgetData.quick_replies : [],
+    launcherIcon: widgetData?.launcher_icon || "",
+    hideBranding: widgetData?.hide_branding === true,
+    ai_enabled: widgetData?.ai_enabled === true,
+    ai_provider: widgetData?.ai_provider || "openai",
+    ai_api_key: widgetData?.ai_api_key || "",
+    ai_model: widgetData?.ai_model || "gpt-4o-mini",
+    ai_system_prompt: widgetData?.ai_system_prompt || "",
+    business_description: widgetData?.business_description || "",
+    ai_temperature: Number(widgetData?.ai_temperature || 0.7),
+    ai_max_tokens: Number(widgetData?.ai_max_tokens || 500),
+    updatedAt: widgetData?.updated_at || widgetData?.created_at || null,
+  };
 }
 
 function getOpenAIForWidget(widgetId, aiConfig) {
@@ -602,6 +643,30 @@ app.post("/api/verify-payment", async (req, res) => {
   }
 });
 
+app.get("/api/widget-config/:identity", async (req, res) => {
+  const identity = (req.params.identity || "").trim();
+  if (!identity) {
+    return res.status(400).json({ error: "Missing widget identity" });
+  }
+
+  try {
+    const widgetData = await getWidgetConfigByIdentity(identity);
+    if (!widgetData) {
+      return res.status(404).json({ error: "Widget config not found" });
+    }
+
+    const profileDoc = await firestore.collection("profiles").doc(widgetData.user_id).get();
+    const profileData = profileDoc.exists ? profileDoc.data() : {};
+    const publicConfig = mapWidgetToPublicConfig(widgetData, profileData, identity);
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({ config: publicConfig });
+  } catch (error) {
+    console.error("widget-config error", error);
+    return res.status(500).json({ error: "Failed to load widget config" });
+  }
+});
+
 app.get("/api/w/:widgetId.js", async (req, res) => {
   const { widgetId } = req.params;
   if (!widgetId) return res.status(400).send("// widgetId is required");
@@ -624,6 +689,7 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
 
     const profileDoc = await firestore.collection("profiles").doc(widgetData.user_id).get();
     const profileData = profileDoc.exists ? profileDoc.data() : {};
+    const publicConfig = mapWidgetToPublicConfig(widgetData, profileData, widgetId);
 
     if (profileData?.subscription_status === "suspended") {
       res.setHeader("Content-Type", "application/javascript");
@@ -632,15 +698,19 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
 
     const embedUrl = getWidgetEmbedUrl(req);
 
+    const firebasePublic = getPublicFirebaseConfig();
     const script = `
 (function () {
-  window.LEADWIDGET_CLIENT_ID = ${JSON.stringify(widgetData.user_id || widgetId)};
+  window.LEADWIDGET_CLIENT_ID = ${JSON.stringify(publicConfig.clientId)};
   window.LEADWIDGET_CONFIG = Object.assign({}, window.LEADWIDGET_CONFIG || {}, {
-    clientId: ${JSON.stringify(widgetData.user_id || widgetId)},
-    businessName: ${JSON.stringify(widgetData.business_name || profileData?.business_name || "LeadWidget")},
-    primaryColor: ${JSON.stringify(widgetData.primary_color || "#00C185")},
-    whatsappDestination: ${JSON.stringify(widgetData.whatsapp_destination || profileData?.whatsapp_number || "")},
-    language: ${JSON.stringify(widgetData.language || "es")}
+    clientId: ${JSON.stringify(publicConfig.clientId)},
+    widgetId: ${JSON.stringify(publicConfig.widgetId)},
+    businessName: ${JSON.stringify(publicConfig.businessName)},
+    primaryColor: ${JSON.stringify(publicConfig.primaryColor)},
+    whatsappDestination: ${JSON.stringify(publicConfig.whatsappDestination)},
+    language: ${JSON.stringify(publicConfig.language)},
+    projectId: ${JSON.stringify(firebasePublic.projectId)},
+    apiKey: ${JSON.stringify(firebasePublic.apiKey)}
   });
 
   var id = "leadwidget-embed-script";
