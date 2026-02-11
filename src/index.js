@@ -140,6 +140,7 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity) {
     testimonials,
     launcherIcon: widgetData?.launcher_icon || "",
     hideBranding: widgetData?.hide_branding === true,
+    brandingText: widgetData?.branding_text || "",
     ai_enabled: widgetData?.ai_enabled === true,
     ai_provider: widgetData?.ai_provider || "openai",
     ai_api_key: widgetData?.ai_api_key || "",
@@ -738,6 +739,8 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
     primaryColor: ${JSON.stringify(publicConfig.primaryColor)},
     whatsappDestination: ${JSON.stringify(publicConfig.whatsappDestination)},
     language: ${JSON.stringify(publicConfig.language)},
+    hideBranding: ${JSON.stringify(publicConfig.hideBranding)},
+    brandingText: ${JSON.stringify(publicConfig.brandingText || "")},
     projectId: ${JSON.stringify(firebasePublic.projectId)},
     apiKey: ${JSON.stringify(firebasePublic.apiKey)}
   });
