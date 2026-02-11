@@ -107,6 +107,15 @@ async function decodeTokenIfPresent(req) {
   }
 }
 
+async function isSuperAdmin(decoded) {
+  const email = (decoded?.email || "").toLowerCase();
+  if (SUPERADMIN_EMAILS.has(email)) return true;
+  if (!decoded?.uid) return false;
+
+  const roleDoc = await firestore.collection("user_roles").doc(decoded.uid).get();
+  return roleDoc.exists && roleDoc.data()?.role === "superadmin";
+}
+
 app.get("/health", (_, res) => {
   return res.status(200).json({ ok: true, service: "leads-widget-backend", time: new Date().toISOString() });
 });
@@ -443,6 +452,50 @@ app.post("/api/users/bootstrap", async (req, res) => {
   } catch (error) {
     console.error("bootstrap user error", error);
     return res.status(500).json({ error: "Failed to bootstrap user profile" });
+  }
+});
+
+app.post("/api/admin/delete-user", async (req, res) => {
+  const decoded = await decodeTokenIfPresent(req);
+  if (!decoded?.uid) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const callerIsSuperAdmin = await isSuperAdmin(decoded);
+    if (!callerIsSuperAdmin) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const targetUserId = (req.body?.userId || "").toString().trim();
+    if (!targetUserId) {
+      return res.status(400).json({ error: "Missing userId" });
+    }
+
+    const profileRef = firestore.collection("profiles").doc(targetUserId);
+    const profileSnap = await profileRef.get();
+    const targetEmail = (profileSnap.data()?.email || "").toLowerCase();
+
+    if (SUPERADMIN_EMAILS.has(targetEmail)) {
+      return res.status(403).json({ error: "Protected superadmin account cannot be deleted" });
+    }
+
+    const configSnap = await firestore
+      .collection("widget_configs")
+      .where("user_id", "==", targetUserId)
+      .get();
+
+    const batch = firestore.batch();
+    batch.delete(profileRef);
+    batch.delete(firestore.collection("user_roles").doc(targetUserId));
+
+    configSnap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("admin delete user error", error);
+    return res.status(500).json({ error: "Failed to delete user" });
   }
 });
 
