@@ -8,6 +8,11 @@ app.use(express.json({ limit: "1mb" }));
 
 const firestore = getFirestore();
 const firebaseAdmin = getFirebaseAdmin();
+const SUPERADMIN_EMAILS = new Set([
+  "afiliadosprobusiness@gmail.com",
+  "superadmin@leadwidget.pe",
+  "superadmin2@leadwidget.pe",
+]);
 
 const corsOrigins = (process.env.CORS_ORIGINS || "*")
   .split(",")
@@ -291,6 +296,14 @@ app.post("/api/chat", async (req, res) => {
 
     const openai = getOpenAIForWidget(widgetId, profileData);
     if (!openai) {
+      if (widgetId === "demo-landing") {
+        return res.status(200).json({
+          response: lang === "en"
+            ? "I can help you qualify leads and send them to WhatsApp. In this demo, ask about pricing, setup time, or how filtering works."
+            : "Puedo ayudarte a calificar leads y enviarlos a WhatsApp. En esta demo pregúntame por precios, tiempo de implementación o cómo funciona el filtro.",
+        });
+      }
+
       return res.status(200).json({
         response: lang === "en"
           ? "To answer, configure your OpenAI API key in Dashboard > AI tab."
@@ -380,6 +393,56 @@ app.post("/api/chat", async (req, res) => {
     return res.status(200).json({
       response: `Technical error: ${error?.message || "unknown"}`,
     });
+  }
+});
+
+app.post("/api/users/bootstrap", async (req, res) => {
+  const decoded = await decodeTokenIfPresent(req);
+  if (!decoded?.uid) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const uid = decoded.uid;
+  const email = (decoded.email || "").toLowerCase();
+  const businessName = (req.body?.businessName || "").toString().trim();
+  const referredBy = req.body?.referredBy || null;
+  const now = new Date().toISOString();
+
+  try {
+    const profileRef = firestore.collection("profiles").doc(uid);
+    const profileSnap = await profileRef.get();
+    let created = false;
+
+    if (!profileSnap.exists) {
+      created = true;
+      await profileRef.set({
+        email: decoded.email || null,
+        business_name: businessName,
+        created_at: now,
+        updated_at: now,
+        subscription_status: "trial",
+        ai_enabled: false,
+        ai_model: "gpt-4o-mini",
+        referred_by: referredBy,
+      });
+    } else {
+      const updates = { updated_at: now };
+      if (businessName) updates.business_name = businessName;
+      await profileRef.set(updates, { merge: true });
+    }
+
+    if (SUPERADMIN_EMAILS.has(email)) {
+      await firestore.collection("user_roles").doc(uid).set(
+        { role: "superadmin", updated_at: now },
+        { merge: true }
+      );
+      return res.status(200).json({ success: true, role: "superadmin", created });
+    }
+
+    return res.status(200).json({ success: true, role: "client", created });
+  } catch (error) {
+    console.error("bootstrap user error", error);
+    return res.status(500).json({ error: "Failed to bootstrap user profile" });
   }
 });
 
