@@ -308,8 +308,8 @@ app.post("/api/chat", async (req, res) => {
       if (widgetId === "demo-landing") {
         return res.status(200).json({
           response: lang === "en"
-            ? "I can help you qualify leads and send them to WhatsApp. In this demo, ask about pricing, setup time, or how filtering works."
-            : "Puedo ayudarte a calificar leads y enviarlos a WhatsApp. En esta demo pregúntame por precios, tiempo de implementación o cómo funciona el filtro.",
+            ? "Missing OPENAI_API_KEY in backend environment. Configure it to enable AI responses in demo."
+            : "Falta OPENAI_API_KEY en el backend. Configuralo para habilitar respuestas IA en la demo.",
         });
       }
 
@@ -475,8 +475,10 @@ app.post("/api/admin/delete-user", async (req, res) => {
     const profileRef = firestore.collection("profiles").doc(targetUserId);
     const profileSnap = await profileRef.get();
     const targetEmail = (profileSnap.data()?.email || "").toLowerCase();
+    const targetRoleSnap = await firestore.collection("user_roles").doc(targetUserId).get();
+    const targetRole = (targetRoleSnap.data()?.role || "").toLowerCase();
 
-    if (SUPERADMIN_EMAILS.has(targetEmail)) {
+    if (targetUserId === decoded.uid || SUPERADMIN_EMAILS.has(targetEmail) || targetRole === "superadmin") {
       return res.status(403).json({ error: "Protected superadmin account cannot be deleted" });
     }
 
