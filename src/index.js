@@ -84,36 +84,47 @@ function getPublicFirebaseConfig() {
 
 const FACEBOOK_PIXEL_ID_RE = /^\d{5,20}$/;
 const TIKTOK_PIXEL_ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
-const GOOGLE_TAG_ID_RE = /^(G-[A-Z0-9]+|AW-\d+|GTM-[A-Z0-9]+|DC-\d+|UA-\d+-\d+)$/i;
-const MAX_CUSTOM_TRACKING_CODE_LENGTH = 5000;
+const GOOGLE_TAG_ID_RE = /^(G-[A-Z0-9]+|AW-\d+|GTM-[A-Z0-9]+|DC-\d+|UA-\d+-\d+)$/;
+const MAX_FACEBOOK_PIXEL_ID_LENGTH = 20;
+const MAX_TIKTOK_PIXEL_ID_LENGTH = 64;
+const MAX_GOOGLE_TAG_ID_LENGTH = 32;
 
 function cleanText(value) {
   if (typeof value !== "string") return "";
   return value.trim();
 }
 
+function sanitizeTrackingId(value, { regex, maxLength, transform = (input) => input }) {
+  const normalized = cleanText(value);
+  if (!normalized) return null;
+
+  const transformed = transform(normalized);
+  if (!transformed || transformed.length > maxLength) return null;
+  return regex.test(transformed) ? transformed : null;
+}
+
 function sanitizeFacebookPixelId(value) {
-  const normalized = cleanText(value).replace(/\s+/g, "");
-  return FACEBOOK_PIXEL_ID_RE.test(normalized) ? normalized : "";
+  return sanitizeTrackingId(value, {
+    regex: FACEBOOK_PIXEL_ID_RE,
+    maxLength: MAX_FACEBOOK_PIXEL_ID_LENGTH,
+    transform: (input) => input.replace(/\s+/g, ""),
+  });
 }
 
 function sanitizeTikTokPixelId(value) {
-  const normalized = cleanText(value).replace(/\s+/g, "");
-  return TIKTOK_PIXEL_ID_RE.test(normalized) ? normalized : "";
+  return sanitizeTrackingId(value, {
+    regex: TIKTOK_PIXEL_ID_RE,
+    maxLength: MAX_TIKTOK_PIXEL_ID_LENGTH,
+    transform: (input) => input.replace(/\s+/g, ""),
+  });
 }
 
 function sanitizeGoogleTagId(value) {
-  const normalized = cleanText(value).toUpperCase();
-  return GOOGLE_TAG_ID_RE.test(normalized) ? normalized : "";
-}
-
-function sanitizeCustomTrackingCode(value) {
-  const normalized = cleanText(value);
-  if (!normalized) return "";
-
-  const wrappedScript = normalized.match(/^<script[^>]*>([\s\S]*?)<\/script>$/i);
-  const code = wrappedScript ? wrappedScript[1].trim() : normalized;
-  return code.slice(0, MAX_CUSTOM_TRACKING_CODE_LENGTH);
+  return sanitizeTrackingId(value, {
+    regex: GOOGLE_TAG_ID_RE,
+    maxLength: MAX_GOOGLE_TAG_ID_LENGTH,
+    transform: (input) => input.replace(/\s+/g, "").toUpperCase(),
+  });
 }
 
 function buildTrackingConfig(widgetData = {}) {
@@ -121,9 +132,6 @@ function buildTrackingConfig(widgetData = {}) {
     facebookPixelId: sanitizeFacebookPixelId(widgetData.facebook_pixel_id),
     tiktokPixelId: sanitizeTikTokPixelId(widgetData.tiktok_pixel_id),
     googleTagId: sanitizeGoogleTagId(widgetData.google_tag_id),
-    customTrackingCode: sanitizeCustomTrackingCode(
-      widgetData.custom_tracking_code || widgetData.custom_code || ""
-    ),
   };
 }
 
@@ -198,7 +206,7 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity) {
     facebookPixelId: trackingConfig.facebookPixelId,
     tiktokPixelId: trackingConfig.tiktokPixelId,
     googleTagId: trackingConfig.googleTagId,
-    customTrackingCode: trackingConfig.customTrackingCode,
+    customTrackingCode: "",
     updatedAt: widgetData?.updated_at || widgetData?.created_at || null,
   };
 }
@@ -874,10 +882,10 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
     primaryColor: ${JSON.stringify(publicConfig.primaryColor)},
     whatsappDestination: ${JSON.stringify(publicConfig.whatsappDestination)},
     language: ${JSON.stringify(publicConfig.language)},
-    facebookPixelId: ${JSON.stringify(publicConfig.facebookPixelId || "")},
-    tiktokPixelId: ${JSON.stringify(publicConfig.tiktokPixelId || "")},
-    googleTagId: ${JSON.stringify(publicConfig.googleTagId || "")},
-    customTrackingCode: ${JSON.stringify(publicConfig.customTrackingCode || "")},
+    facebookPixelId: ${JSON.stringify(publicConfig.facebookPixelId)},
+    tiktokPixelId: ${JSON.stringify(publicConfig.tiktokPixelId)},
+    googleTagId: ${JSON.stringify(publicConfig.googleTagId)},
+    customTrackingCode: "",
     hideBranding: ${JSON.stringify(publicConfig.hideBranding)},
     brandingText: ${JSON.stringify(publicConfig.brandingText || "")},
     projectId: ${JSON.stringify(firebasePublic.projectId)},
@@ -982,17 +990,6 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
         }
       }
 
-      if (cfg.customTrackingCode) {
-        w.__LEADWIDGET_CUSTOM_TRACKING__ = w.__LEADWIDGET_CUSTOM_TRACKING__ || {};
-        if (!w.__LEADWIDGET_CUSTOM_TRACKING__[cfg.widgetId]) {
-          try {
-            (new Function(cfg.customTrackingCode))();
-            w.__LEADWIDGET_CUSTOM_TRACKING__[cfg.widgetId] = true;
-          } catch (customError) {
-            console.warn("LeadWidget: custom tracking code error", customError);
-          }
-        }
-      }
     } catch (trackingError) {
       console.warn("LeadWidget: tracking initialization failed", trackingError);
     }
