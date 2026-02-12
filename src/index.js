@@ -482,13 +482,22 @@ app.post("/api/users/bootstrap", async (req, res) => {
   const uid = decoded.uid;
   const email = (decoded.email || "").toLowerCase();
   const businessName = (req.body?.businessName || "").toString().trim();
-  const referredBy = req.body?.referredBy || null;
+  const referredByRaw = req.body?.referredBy || null;
   const now = new Date().toISOString();
 
   try {
     const profileRef = firestore.collection("profiles").doc(uid);
     const profileSnap = await profileRef.get();
     let created = false;
+
+    let referredBy = null;
+    if (typeof referredByRaw === "string") {
+      const candidate = referredByRaw.trim();
+      if (candidate && candidate !== uid) {
+        const refSnap = await firestore.collection("profiles").doc(candidate).get();
+        if (refSnap.exists) referredBy = candidate;
+      }
+    }
 
     if (!profileSnap.exists) {
       created = true;
@@ -520,6 +529,82 @@ app.post("/api/users/bootstrap", async (req, res) => {
   } catch (error) {
     console.error("bootstrap user error", error);
     return res.status(500).json({ error: "Failed to bootstrap user profile" });
+  }
+});
+
+app.get("/api/affiliates/network", async (req, res) => {
+  const decoded = await decodeTokenIfPresent(req);
+  if (!decoded?.uid) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const uid = decoded.uid;
+  const includeInactive = String(req.query?.includeInactive || "0").toLowerCase() === "1";
+  const requestedLevels = Number(req.query?.levels || 4);
+  const maxLevels = 4;
+  const levels = Number.isFinite(requestedLevels) ? Math.min(Math.max(1, requestedLevels), maxLevels) : maxLevels;
+
+  const mapProfile = (id, data) => ({
+    id,
+    email: data?.email || null,
+    display_name: data?.display_name || null,
+    business_name: data?.business_name || null,
+    subscription_status: data?.subscription_status || "trial",
+    plan_type: data?.plan_type || null,
+    referred_by: data?.referred_by || null,
+    created_at: data?.created_at || null,
+  });
+
+  try {
+    const myProfileSnap = await firestore.collection("profiles").doc(uid).get();
+    const myProfile = myProfileSnap.exists ? myProfileSnap.data() : {};
+
+    let upline = null;
+    const uplineId = typeof myProfile?.referred_by === "string" ? myProfile.referred_by.trim() : "";
+    if (uplineId) {
+      const upSnap = await firestore.collection("profiles").doc(uplineId).get();
+      if (upSnap.exists) upline = mapProfile(upSnap.id, upSnap.data());
+    }
+
+    const getChildrenOf = async (parentId) => {
+      const q = await firestore.collection("profiles").where("referred_by", "==", parentId).get();
+      const out = [];
+      q.docs.forEach((d) => {
+        const data = d.data() || {};
+        const status = (data.subscription_status || "trial").toString();
+        if (!includeInactive && status !== "active") return;
+        out.push(mapProfile(d.id, data));
+      });
+      return out;
+    };
+
+    const levelsOut = [];
+    let parents = [uid];
+    const seen = new Set([uid]);
+
+    for (let level = 1; level <= levels; level++) {
+      if (!parents.length) break;
+      const childBuckets = await Promise.all(parents.map((p) => getChildrenOf(p)));
+      const children = childBuckets.flat();
+      const unique = [];
+      const nextParents = [];
+      for (const c of children) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        unique.push(c);
+        nextParents.push(c.id);
+      }
+      levelsOut.push({ level, users: unique });
+      parents = nextParents;
+    }
+
+    return res.status(200).json({
+      upline,
+      levels: levelsOut,
+    });
+  } catch (error) {
+    console.error("affiliate network error", error);
+    return res.status(500).json({ error: "Failed to load affiliate network" });
   }
 });
 
