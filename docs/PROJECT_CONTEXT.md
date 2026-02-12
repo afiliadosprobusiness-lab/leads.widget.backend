@@ -14,6 +14,9 @@ Backend externo para Lead Widget: sirve el script embebible del widget, procesa 
 - Servicio stateless:
   - Persistencia en Firestore.
   - Endpoint del script embebible (`/api/w/:widgetId.js`) debe ser rápido, cacheable y seguro.
+- Tracking embebido:
+  - El backend puede inyectar píxeles opcionales (Meta/TikTok/Google) y código personalizado del cliente en `/api/w/:widgetId.js`.
+  - IDs y código se sanitizan antes de exponerlos para reducir riesgo de payloads inválidos.
 - Seguridad:
   - `FIREBASE_SERVICE_ACCOUNT` y `OPENAI_API_KEY` solo en Cloud Run.
   - CORS restringido por `CORS_ORIGINS` (CSV).
@@ -27,6 +30,7 @@ Backend externo para Lead Widget: sirve el script embebible del widget, procesa 
 - `POST /api/track`
 - `POST /api/verify-payment`
 - `GET /api/w/:widgetId.js`
+- `GET /api/widget-config/:identity`
 
 ## Convenciones de código
 - ESM (`type: module`).
@@ -39,4 +43,3 @@ Backend externo para Lead Widget: sirve el script embebible del widget, procesa 
 - PayPal: `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENV`
 - CORS/URLs: `CORS_ORIGINS`, `PUBLIC_APP_URL`, `WIDGET_EMBED_URL` (opcional)
 - Seguridad: `ALLOW_INSECURE_VERIFY_PAYMENT` (debe ser `false` en producción idealmente)
-

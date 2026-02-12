@@ -72,13 +72,58 @@ function getWidgetEmbedUrl(req) {
     }
   }
 
-  return "https://whatsapp-leads-peru.vercel.app/widget-embed.js";
+  return "https://leads-widget.vercel.app/widget-embed.js";
 }
 
 function getPublicFirebaseConfig() {
   return {
     projectId: (process.env.FIREBASE_PUBLIC_PROJECT_ID || "leads-widget").trim(),
     apiKey: (process.env.FIREBASE_PUBLIC_API_KEY || "AIzaSyCXNFoeg1nrYcFHzU9TEKNnDPg1mHU3_tA").trim(),
+  };
+}
+
+const FACEBOOK_PIXEL_ID_RE = /^\d{5,20}$/;
+const TIKTOK_PIXEL_ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
+const GOOGLE_TAG_ID_RE = /^(G-[A-Z0-9]+|AW-\d+|GTM-[A-Z0-9]+|DC-\d+|UA-\d+-\d+)$/i;
+const MAX_CUSTOM_TRACKING_CODE_LENGTH = 5000;
+
+function cleanText(value) {
+  if (typeof value !== "string") return "";
+  return value.trim();
+}
+
+function sanitizeFacebookPixelId(value) {
+  const normalized = cleanText(value).replace(/\s+/g, "");
+  return FACEBOOK_PIXEL_ID_RE.test(normalized) ? normalized : "";
+}
+
+function sanitizeTikTokPixelId(value) {
+  const normalized = cleanText(value).replace(/\s+/g, "");
+  return TIKTOK_PIXEL_ID_RE.test(normalized) ? normalized : "";
+}
+
+function sanitizeGoogleTagId(value) {
+  const normalized = cleanText(value).toUpperCase();
+  return GOOGLE_TAG_ID_RE.test(normalized) ? normalized : "";
+}
+
+function sanitizeCustomTrackingCode(value) {
+  const normalized = cleanText(value);
+  if (!normalized) return "";
+
+  const wrappedScript = normalized.match(/^<script[^>]*>([\s\S]*?)<\/script>$/i);
+  const code = wrappedScript ? wrappedScript[1].trim() : normalized;
+  return code.slice(0, MAX_CUSTOM_TRACKING_CODE_LENGTH);
+}
+
+function buildTrackingConfig(widgetData = {}) {
+  return {
+    facebookPixelId: sanitizeFacebookPixelId(widgetData.facebook_pixel_id),
+    tiktokPixelId: sanitizeTikTokPixelId(widgetData.tiktok_pixel_id),
+    googleTagId: sanitizeGoogleTagId(widgetData.google_tag_id),
+    customTrackingCode: sanitizeCustomTrackingCode(
+      widgetData.custom_tracking_code || widgetData.custom_code || ""
+    ),
   };
 }
 
@@ -95,6 +140,7 @@ async function getWidgetConfigByIdentity(widgetId) {
 
 function mapWidgetToPublicConfig(widgetData, profileData = {}, identity) {
   const fallbackWidgetId = widgetData?.widget_id || widgetData?.id || identity;
+  const trackingConfig = buildTrackingConfig(widgetData);
   let testimonials = [];
   if (typeof widgetData?.testimonials_json === "string" && widgetData.testimonials_json.trim()) {
     try {
@@ -149,6 +195,10 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity) {
     business_description: widgetData?.business_description || "",
     ai_temperature: Number(widgetData?.ai_temperature || 0.7),
     ai_max_tokens: Number(widgetData?.ai_max_tokens || 500),
+    facebookPixelId: trackingConfig.facebookPixelId,
+    tiktokPixelId: trackingConfig.tiktokPixelId,
+    googleTagId: trackingConfig.googleTagId,
+    customTrackingCode: trackingConfig.customTrackingCode,
     updatedAt: widgetData?.updated_at || widgetData?.created_at || null,
   };
 }
@@ -824,11 +874,129 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
     primaryColor: ${JSON.stringify(publicConfig.primaryColor)},
     whatsappDestination: ${JSON.stringify(publicConfig.whatsappDestination)},
     language: ${JSON.stringify(publicConfig.language)},
+    facebookPixelId: ${JSON.stringify(publicConfig.facebookPixelId || "")},
+    tiktokPixelId: ${JSON.stringify(publicConfig.tiktokPixelId || "")},
+    googleTagId: ${JSON.stringify(publicConfig.googleTagId || "")},
+    customTrackingCode: ${JSON.stringify(publicConfig.customTrackingCode || "")},
     hideBranding: ${JSON.stringify(publicConfig.hideBranding)},
     brandingText: ${JSON.stringify(publicConfig.brandingText || "")},
     projectId: ${JSON.stringify(firebasePublic.projectId)},
     apiKey: ${JSON.stringify(firebasePublic.apiKey)}
   });
+
+  (function initializeTracking(cfg) {
+    try {
+      var w = window;
+      var d = document;
+      if (!cfg || !cfg.widgetId) return;
+
+      var initialized = (w.__LEADWIDGET_TRACKING_INIT__ = w.__LEADWIDGET_TRACKING_INIT__ || {});
+      if (initialized[cfg.widgetId]) return;
+      initialized[cfg.widgetId] = true;
+
+      var safeDomId = function (value) {
+        return String(value || "").replace(/[^a-zA-Z0-9_-]/g, "");
+      };
+
+      var loadOnce = function (id, src) {
+        if (!id || d.getElementById(id)) return;
+        var script = d.createElement("script");
+        script.id = id;
+        script.async = true;
+        script.src = src;
+        (d.head || d.body || d.documentElement).appendChild(script);
+      };
+
+      if (cfg.facebookPixelId) {
+        w.__LEADWIDGET_FB_PIXELS__ = w.__LEADWIDGET_FB_PIXELS__ || {};
+        if (!w.__LEADWIDGET_FB_PIXELS__[cfg.facebookPixelId]) {
+          !(function (f, b, e, v, n, t, s) {
+            if (f.fbq) return;
+            n = f.fbq = function () {
+              n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments);
+            };
+            if (!f._fbq) f._fbq = n;
+            n.push = n;
+            n.loaded = true;
+            n.version = "2.0";
+            n.queue = [];
+            t = b.createElement(e);
+            t.async = true;
+            t.src = v;
+            s = b.getElementsByTagName(e)[0];
+            s.parentNode.insertBefore(t, s);
+          })(w, d, "script", "https://connect.facebook.net/en_US/fbevents.js");
+          w.fbq("init", cfg.facebookPixelId);
+          w.__LEADWIDGET_FB_PIXELS__[cfg.facebookPixelId] = true;
+        }
+        if (typeof w.fbq === "function") {
+          w.fbq("track", "PageView");
+        }
+      }
+
+      if (cfg.tiktokPixelId) {
+        w.__LEADWIDGET_TT_PIXELS__ = w.__LEADWIDGET_TT_PIXELS__ || {};
+        if (!w.__LEADWIDGET_TT_PIXELS__[cfg.tiktokPixelId]) {
+          !(function (wRef, dRef, tRef) {
+            wRef.TiktokAnalyticsObject = tRef;
+            var ttq = (wRef[tRef] = wRef[tRef] || []);
+            ttq.methods = ["page", "track", "identify", "instances", "debug", "on", "off", "once", "ready", "alias", "group", "enableCookie", "disableCookie"];
+            ttq.setAndDefer = function (obj, method) {
+              obj[method] = function () {
+                obj.push([method].concat(Array.prototype.slice.call(arguments, 0)));
+              };
+            };
+            for (var i = 0; i < ttq.methods.length; i++) {
+              ttq.setAndDefer(ttq, ttq.methods[i]);
+            }
+            ttq.load = function (id) {
+              var scriptId = "leadwidget-tiktok-" + safeDomId(id);
+              loadOnce(scriptId, "https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=" + encodeURIComponent(id) + "&lib=ttq");
+            };
+            ttq.loaded = true;
+          })(w, d, "ttq");
+          w.ttq.load(cfg.tiktokPixelId);
+          w.__LEADWIDGET_TT_PIXELS__[cfg.tiktokPixelId] = true;
+        }
+        if (w.ttq && typeof w.ttq.page === "function") {
+          w.ttq.page();
+        }
+      }
+
+      if (cfg.googleTagId) {
+        w.__LEADWIDGET_GTAG_IDS__ = w.__LEADWIDGET_GTAG_IDS__ || {};
+        if (!w.__LEADWIDGET_GTAG_IDS__[cfg.googleTagId]) {
+          var gtagScriptId = "leadwidget-gtag-" + safeDomId(cfg.googleTagId);
+          loadOnce(gtagScriptId, "https://www.googletagmanager.com/gtag/js?id=" + encodeURIComponent(cfg.googleTagId));
+          w.dataLayer = w.dataLayer || [];
+          w.gtag =
+            w.gtag ||
+            function () {
+              w.dataLayer.push(arguments);
+            };
+          w.gtag("js", new Date());
+          w.gtag("config", cfg.googleTagId);
+          w.__LEADWIDGET_GTAG_IDS__[cfg.googleTagId] = true;
+        } else if (typeof w.gtag === "function") {
+          w.gtag("config", cfg.googleTagId);
+        }
+      }
+
+      if (cfg.customTrackingCode) {
+        w.__LEADWIDGET_CUSTOM_TRACKING__ = w.__LEADWIDGET_CUSTOM_TRACKING__ || {};
+        if (!w.__LEADWIDGET_CUSTOM_TRACKING__[cfg.widgetId]) {
+          try {
+            (new Function(cfg.customTrackingCode))();
+            w.__LEADWIDGET_CUSTOM_TRACKING__[cfg.widgetId] = true;
+          } catch (customError) {
+            console.warn("LeadWidget: custom tracking code error", customError);
+          }
+        }
+      }
+    } catch (trackingError) {
+      console.warn("LeadWidget: tracking initialization failed", trackingError);
+    }
+  })(window.LEADWIDGET_CONFIG || {});
 
   var id = "leadwidget-embed-script";
   if (document.getElementById(id)) return;
