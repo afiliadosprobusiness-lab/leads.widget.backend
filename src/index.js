@@ -59,6 +59,20 @@ function toDateKey(date) {
   return date.toISOString().split("T")[0];
 }
 
+function parseIsoDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function addDaysIso(value, days = 30) {
+  const baseDate = parseIsoDate(value);
+  if (!baseDate) return null;
+  const nextDate = new Date(baseDate);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate.toISOString();
+}
+
 function getWidgetEmbedUrl(req) {
   const explicit = (process.env.WIDGET_EMBED_URL || "").trim();
   if (explicit) return explicit;
@@ -1422,6 +1436,7 @@ app.post("/api/verify-payment", async (req, res) => {
     await firestore.collection("profiles").doc(targetUserId).set({
       subscription_status: "active",
       plan_type: normalizedPlanType,
+      next_renewal_at: addDaysIso(new Date().toISOString(), 30),
       trial_ends_at: null,
       updated_at: new Date().toISOString(),
     }, { merge: true });
@@ -1485,6 +1500,7 @@ app.post("/api/admin/payments/:paymentId/verify", async (req, res) => {
       await firestore.collection("profiles").doc(payment.user_id).set({
         subscription_status: "active",
         plan_type: normalizedPlanType,
+        next_renewal_at: addDaysIso(nowIso, 30),
         trial_ends_at: null,
         partner_id: partnerId || null,
         updated_at: nowIso,
@@ -1586,8 +1602,33 @@ app.get("/api/partners/clients", async (req, res) => {
 
   try {
     const clientsSnap = await firestore.collection("profiles").where("partner_id", "==", partnerId).get();
+    const paymentsSnap = await firestore.collection("payments").where("partner_id", "==", partnerId).get();
+    const latestPaidAtByUser = new Map();
+    paymentsSnap.docs.forEach((docSnap) => {
+      const payment = docSnap.data() || {};
+      const status = String(payment.status || "").toLowerCase();
+      if (!["completed", "verified", "active"].includes(status)) return;
+      const userId = String(payment.user_id || "").trim();
+      if (!userId) return;
+      const paidAt = String(payment.verified_at || payment.created_at || "").trim();
+      if (!paidAt) return;
+      const currentLatest = latestPaidAtByUser.get(userId);
+      if (!currentLatest || paidAt > currentLatest) {
+        latestPaidAtByUser.set(userId, paidAt);
+      }
+    });
+
     const clients = clientsSnap.docs.map((d) => {
       const data = d.data() || {};
+      const subscriptionStatus = String(data.subscription_status || "trial").toLowerCase();
+      const explicitRenewal = data.next_renewal_at || null;
+      const latestPaidAt = latestPaidAtByUser.get(d.id) || null;
+      const fallbackBaseDate = latestPaidAt || data.updated_at || data.created_at || null;
+      const derivedRenewal = explicitRenewal || (
+        subscriptionStatus === "active"
+          ? addDaysIso(fallbackBaseDate, 30)
+          : null
+      );
       return {
         id: d.id,
         email: data.email || null,
@@ -1596,7 +1637,7 @@ app.get("/api/partners/clients", async (req, res) => {
         plan_type: data.plan_type || "pro",
         created_at: data.created_at || null,
         trial_ends_at: data.trial_ends_at || null,
-        next_renewal_at: data.next_renewal_at || null,
+        next_renewal_at: derivedRenewal,
       };
     });
 

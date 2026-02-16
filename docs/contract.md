@@ -343,3 +343,7 @@ Cambios de comportamiento relevantes:
 - Cambio: agregado soporte `branding_link` en `widget_configs` y `brandingLink` en `PublicWidgetConfig` para personalizar URL del texto de marca (Plan PLUS)
 - Tipo: non-breaking
 - Impacto: mantiene fallback al enlace promocional actual cuando no hay URL valida
+- Fecha: 2026-02-16
+- Cambio: `next_renewal_at` se fija en verificaciones de pago y `GET /api/partners/clients` aplica fallback derivado para cuentas activas sin dato historico
+- Tipo: non-breaking
+- Impacto: mejora consistencia visual del campo "Prox. renovacion" en dashboard partner sin cambiar shape del endpoint

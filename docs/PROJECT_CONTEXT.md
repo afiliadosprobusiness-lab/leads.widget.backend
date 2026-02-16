@@ -67,6 +67,10 @@ Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y d
   - `POST /api/admin/payouts/create`
   - `POST /api/admin/payouts/:payoutId/mark-paid`
 
+### Regla de renovacion (partner clients)
+- Al verificar pago (`/api/verify-payment` y `/api/admin/payments/:paymentId/verify`) se guarda `next_renewal_at` (+30 dias) en el perfil del cliente.
+- `GET /api/partners/clients` incluye fallback de `next_renewal_at` derivado (desde ultimo pago o `updated_at/created_at`) para evitar valores vacios en cuentas activas legacy.
+
 ### Resiliencia de roles partner
 - `POST /api/users/bootstrap` incluye auto-recuperacion de membresia en `partner_users` para cuentas de agencia (`account_type` partner) cuando existe `partner_id` pero falta el documento de membresia.
 - Este guardrail evita que una cuenta partner caiga al dashboard cliente por inconsistencias de datos.
