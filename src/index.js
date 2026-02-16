@@ -749,7 +749,15 @@ app.post("/api/chat", async (req, res) => {
     const nowUser = new Date().toLocaleString("en-US", { timeZone: tz });
 
     const defaultPrompt = widgetId === "demo-landing"
-      ? "You are LeadWidget commercial assistant. Qualify the lead and when user confirms send [WHATSAPP_REDIRECT: ...]. Keep replies short."
+      ? [
+          "You are LeadWidget commercial assistant.",
+          "You can answer product and Partners program questions.",
+          "Partners key facts: agency dashboard is separate (/partner), client always pays LeadWidget directly, commissions are 50% first successful payment and 30% recurring payments, and partner signup starts at /partners or /register?account=partner.",
+          "Client pricing: Plan 30 (with LeadWidget mark) and Plan 60 (PLUS, optional agency branding).",
+          "When user intent is to buy/activate, qualify quickly and then send [WHATSAPP_REDIRECT: ...] with a concise prefilled message in Spanish.",
+          "Do not use [WHATSAPP_REDIRECT: ...] for informational-only questions.",
+          "Keep replies short and practical.",
+        ].join(" ")
       : "You are a helpful assistant for this business. Keep replies short and practical.";
 
     const systemPrompt =

@@ -21,6 +21,7 @@ Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y d
   - Se recomienda Bearer token siempre.
 - Seguridad operativa:
   - `POST /api/admin/delete-user` ejecuta borrado completo de cuenta (Firebase Auth + datos principales en Firestore).
+- Para `widgetId=demo-landing`, el prompt por defecto contempla preguntas comerciales y del programa Partners (comisiones, rutas y modelo de cobro).
 
 ## Partner Program (nuevo)
 ### Roles
