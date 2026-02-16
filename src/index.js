@@ -98,6 +98,33 @@ function cleanText(value) {
   return value.trim();
 }
 
+function sanitizeHttpUrl(value, { maxLength = 500 } = {}) {
+  const normalized = cleanText(value);
+  if (!normalized || normalized.length > maxLength) return "";
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function buildDefaultBrandingLink(clientId) {
+  const fallbackBase = "https://leads-widget.vercel.app";
+  const configuredBase = cleanText(process.env.PUBLIC_APP_URL || "");
+  const base = configuredBase || fallbackBase;
+  try {
+    const url = new URL("/crear-ahora", base);
+    if (clientId) url.searchParams.set("ref", String(clientId));
+    return url.toString();
+  } catch {
+    return clientId
+      ? `${fallbackBase}/crear-ahora?ref=${encodeURIComponent(String(clientId))}`
+      : `${fallbackBase}/crear-ahora`;
+  }
+}
+
 function sanitizeTrackingId(value, { regex, maxLength, transform = (input) => input }) {
   const normalized = cleanText(value);
   if (!normalized) return null;
@@ -152,12 +179,17 @@ async function getWidgetConfigByIdentity(widgetId) {
 
 function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partnerData = {}) {
   const fallbackWidgetId = widgetData?.widget_id || widgetData?.id || identity;
+  const resolvedClientId = widgetData?.user_id || identity;
   const trackingConfig = buildTrackingConfig(widgetData);
   const clientPlanType = String(profileData?.plan_type || "").toLowerCase();
   const canUseCustomBranding = clientPlanType === "plus";
   const requestedHideBranding = widgetData?.hide_branding === true;
   const partnerBrandingText = cleanText(partnerData?.branding?.agency_name || partnerData?.name || "");
   const preferredBrandingText = cleanText(widgetData?.branding_text || "") || partnerBrandingText;
+  const requestedBrandingLink = sanitizeHttpUrl(
+    widgetData?.branding_link || partnerData?.branding?.cta_url || "",
+  );
+  const brandingLink = requestedBrandingLink || buildDefaultBrandingLink(resolvedClientId);
   let testimonials = [];
   if (typeof widgetData?.testimonials_json === "string" && widgetData.testimonials_json.trim()) {
     try {
@@ -183,7 +215,7 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partner
       : []);
 
   return {
-    clientId: widgetData?.user_id || identity,
+    clientId: resolvedClientId,
     widgetId: fallbackWidgetId,
     businessName: widgetData?.business_name || profileData?.business_name || "LeadWidget",
     primaryColor: widgetData?.primary_color || "#00C185",
@@ -204,6 +236,7 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partner
     launcherIcon: widgetData?.launcher_icon || "",
     hideBranding: canUseCustomBranding ? requestedHideBranding : false,
     brandingText: canUseCustomBranding ? preferredBrandingText : "",
+    brandingLink: canUseCustomBranding ? brandingLink : buildDefaultBrandingLink(resolvedClientId),
     ai_enabled: widgetData?.ai_enabled === true,
     ai_provider: widgetData?.ai_provider || "openai",
     ai_api_key: widgetData?.ai_api_key || "",
@@ -2323,6 +2356,7 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
     customTrackingCode: "",
     hideBranding: ${JSON.stringify(publicConfig.hideBranding)},
     brandingText: ${JSON.stringify(publicConfig.brandingText || "")},
+    brandingLink: ${JSON.stringify(publicConfig.brandingLink || "")},
     projectId: ${JSON.stringify(firebasePublic.projectId)},
     apiKey: ${JSON.stringify(firebasePublic.apiKey)}
   });

@@ -50,7 +50,7 @@ Campos observados (pueden coexistir segun flujo):
 Campos observados:
 
 - Identidad: `user_id`, `widget_id`
-- Branding/UI: `business_name`, `primary_color`, `welcome_message`, `chat_placeholder`, `launcher_icon`, `hide_branding`, `branding_text`, `language`, `template`
+- Branding/UI: `business_name`, `primary_color`, `welcome_message`, `chat_placeholder`, `launcher_icon`, `hide_branding`, `branding_text`, `branding_link`, `language`, `template`
 - WhatsApp y flujo: `whatsapp_destination`, `niche_question`
 - Triggers: `trigger_delay`, `trigger_exit_intent`, `exit_intent_title`, `exit_intent_description`, `exit_intent_cta`, `vibration_intensity`
 - Mensajeria: `teaser_messages` (array o string), `quick_replies` (array o string)
@@ -226,7 +226,7 @@ Base detectada:
   - `welcomeMessage`, `template`, `chatPlaceholder`
   - `triggerDelay`, `exitIntentEnabled`, `exitIntentTitle`, `exitIntentDescription`, `exitIntentCta`
   - `teaserMessages`, `quickReplies`, `testimonials`
-  - `launcherIcon`, `hideBranding`, `brandingText`
+  - `launcherIcon`, `hideBranding`, `brandingText`, `brandingLink`
   - `ai_enabled`, `ai_provider`, `ai_api_key`, `ai_model`, `ai_system_prompt`, `business_description`, `ai_temperature`, `ai_max_tokens`
   - `facebookPixelId`, `tiktokPixelId`, `googleTagId`, `customTrackingCode: ""`, `updatedAt`
 
@@ -284,6 +284,7 @@ Comportamientos actuales que clientes ya consumen:
 - Tracking declarativo se mantiene en `facebook_pixel_id`, `tiktok_pixel_id`, `google_tag_id`; `custom_tracking_code/custom_code` no se exponen.
 - `POST /api/verify-payment` es idempotente por `orderID` (`paypal_order_id`).
 - CORS acepta `GET,POST,OPTIONS` y header `Authorization`.
+- En Plan PLUS, `branding_link` permite redireccion configurable del texto de marca; si falta o es invalido se usa `/crear-ahora?ref=<clientId>`.
 
 
 ## Extensiones Partner Program (2026-02-16)
@@ -338,3 +339,7 @@ Cambios de comportamiento relevantes:
 - Cambio: `POST /api/admin/delete-user` pasa de soft delete a borrado completo de acceso (Firebase Auth + datos principales)
 - Tipo: non-breaking
 - Impacto: permite re-registro inmediato con el mismo email luego de eliminacion por superadmin
+- Fecha: 2026-02-16
+- Cambio: agregado soporte `branding_link` en `widget_configs` y `brandingLink` en `PublicWidgetConfig` para personalizar URL del texto de marca (Plan PLUS)
+- Tipo: non-breaking
+- Impacto: mantiene fallback al enlace promocional actual cuando no hay URL valida

@@ -15,7 +15,8 @@ Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y d
 - Compatibilidad backward de rutas existentes (`/api/chat`, `/api/track`, `/api/w/:widgetId.js`, `/api/widget-config/:identity`).
 - White-label reforzado server-side:
   - Plan `pro` (30): no puede ocultar marca.
-  - Plan `plus` (60): permite `hide_branding`/branding custom.
+  - Plan `plus` (60): permite `hide_branding`, `branding_text` y `branding_link` custom.
+  - Si `branding_link` no existe o es invalido, el backend entrega fallback a `/crear-ahora?ref=<clientId>`.
 - Seguridad de pago:
   - `/api/verify-payment` ahora asume `ALLOW_INSECURE_VERIFY_PAYMENT=false` por defecto.
   - Se recomienda Bearer token siempre.
