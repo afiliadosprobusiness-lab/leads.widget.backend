@@ -329,6 +329,8 @@ Cambios de comportamiento relevantes:
 - `POST /api/verify-payment` y verificacion manual admin generan `commission_ledger` cuando existe `partner_id`.
 - Politica de comisiones implementada: primer pago 50%, pagos siguientes 30%; no se reinicia por cancelacion/reactivacion.
 - White-label reforzado server-side: solo `plan_type=plus` permite ocultar o personalizar branding.
+- `GET /api/partners/overview` y `GET /api/partners/commissions` pueden materializar filas `pending` en `commission_ledger` para clientes `plus` activos sin pago registrado del periodo (cobro manual externo).
+- `PUT /api/partners/branding` acepta `branding_text` y `branding_link` (manteniendo compatibilidad con `agency_name`/`cta_url`).
 
 ### Changelog del Contrato
 - Fecha: 2026-02-16
@@ -347,3 +349,11 @@ Cambios de comportamiento relevantes:
 - Cambio: `next_renewal_at` se fija en verificaciones de pago y `GET /api/partners/clients` aplica fallback derivado para cuentas activas sin dato historico
 - Tipo: non-breaking
 - Impacto: mejora consistencia visual del campo "Prox. renovacion" en dashboard partner sin cambiar shape del endpoint
+- Fecha: 2026-02-16
+- Cambio: contabilizacion de comision por cliente PLUS activo en periodo actual aun sin `payments` internos (escenario de cobro manual externo), via filas `pending` auto-generadas
+- Tipo: non-breaking
+- Impacto: el dashboard partner muestra comision calculada sin depender exclusivamente de pagos procesados por la plataforma
+- Fecha: 2026-02-16
+- Cambio: branding partner simplificado a `branding_text` + `branding_link` en `PUT /api/partners/branding` (con aliases legacy)
+- Tipo: non-breaking
+- Impacto: estandariza la configuracion de texto/enlace usados como fallback en widgets PLUS de clientes atribuidos

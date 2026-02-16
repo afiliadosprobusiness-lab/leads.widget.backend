@@ -17,6 +17,10 @@ const PARTNER_ROLES = new Set(["partner_admin", "partner_staff"]);
 const PARTNER_USER_STATUSES = new Set(["active", "invited", "suspended"]);
 const PARTNER_STATUSES = new Set(["active", "suspended"]);
 const COMMISSION_STATUS = new Set(["pending", "approved", "paid", "void"]);
+const PLAN_BASE_AMOUNT_PEN = Object.freeze({
+  pro: 30,
+  plus: 60,
+});
 
 const corsOrigins = (process.env.CORS_ORIGINS || "*")
   .split(",")
@@ -198,10 +202,18 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partner
   const clientPlanType = String(profileData?.plan_type || "").toLowerCase();
   const canUseCustomBranding = clientPlanType === "plus";
   const requestedHideBranding = widgetData?.hide_branding === true;
-  const partnerBrandingText = cleanText(partnerData?.branding?.agency_name || partnerData?.name || "");
+  const partnerBrandingText = cleanText(
+    partnerData?.branding?.branding_text
+      || partnerData?.branding?.agency_name
+      || partnerData?.name
+      || "",
+  );
   const preferredBrandingText = cleanText(widgetData?.branding_text || "") || partnerBrandingText;
   const requestedBrandingLink = sanitizeHttpUrl(
-    widgetData?.branding_link || partnerData?.branding?.cta_url || "",
+    widgetData?.branding_link
+      || partnerData?.branding?.branding_link
+      || partnerData?.branding?.cta_url
+      || "",
   );
   const brandingLink = requestedBrandingLink || buildDefaultBrandingLink(resolvedClientId);
   let testimonials = [];
@@ -535,6 +547,97 @@ async function createCommissionLedgerForPayment({
   return { idempotent: false, isFirstPayment, commissionAmount, rateApplied };
 }
 
+function resolvePlanBaseAmountPen(planType, profile = {}) {
+  const normalizedPlan = String(planType || profile?.plan_type || "pro").toLowerCase();
+  const configuredAmount = safeNumber(
+    profile?.monthly_price_pen ?? profile?.plan_amount_pen ?? profile?.plan_amount,
+    0,
+  );
+  if (configuredAmount > 0) return roundCurrency(configuredAmount);
+  return roundCurrency(PLAN_BASE_AMOUNT_PEN[normalizedPlan] || PLAN_BASE_AMOUNT_PEN.pro);
+}
+
+async function ensureManualPlusCommissionRowsForPartner(partnerId, period = toPeriodKey(new Date())) {
+  if (!partnerId) return { inserted: 0 };
+
+  const partnerSnap = await firestore.collection("partners").doc(partnerId).get();
+  if (!partnerSnap.exists) return { inserted: 0 };
+  const partner = partnerSnap.data() || {};
+  const partnerStatus = String(partner.status || "active").toLowerCase();
+  if (partnerStatus !== "active") return { inserted: 0 };
+
+  const clientsSnap = await firestore.collection("profiles").where("partner_id", "==", partnerId).get();
+  const activePlusClients = clientsSnap.docs.filter((docSnap) => {
+    const profile = docSnap.data() || {};
+    const status = String(profile.subscription_status || "").toLowerCase();
+    const plan = String(profile.plan_type || "").toLowerCase();
+    return status === "active" && plan === "plus";
+  });
+  if (!activePlusClients.length) return { inserted: 0 };
+
+  const ledgerSnap = await firestore.collection("commission_ledger").where("partner_id", "==", partnerId).get();
+  const rows = ledgerSnap.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }));
+  const rowsByClient = new Map();
+  rows.forEach((row) => {
+    const clientUserId = String(row.client_user_id || "").trim();
+    if (!clientUserId) return;
+    if (!rowsByClient.has(clientUserId)) rowsByClient.set(clientUserId, []);
+    rowsByClient.get(clientUserId).push(row);
+  });
+
+  const firstRate = safeNumber(partner.commission_first_rate, 0.5);
+  const recurringRate = safeNumber(partner.commission_recurring_rate, 0.3);
+  const nowIso = new Date().toISOString();
+  let inserted = 0;
+
+  for (const clientSnap of activePlusClients) {
+    const clientUserId = clientSnap.id;
+    const profile = clientSnap.data() || {};
+    const existingRows = rowsByClient.get(clientUserId) || [];
+    const alreadyInPeriod = existingRows.some((row) => {
+      if (String(row.period || "") !== period) return false;
+      const status = String(row.status || "pending").toLowerCase();
+      return status !== "void";
+    });
+    if (alreadyInPeriod) continue;
+
+    const hasPrevious = existingRows.some((row) => String(row.status || "").toLowerCase() !== "void");
+    const rateApplied = hasPrevious ? recurringRate : firstRate;
+    const baseAmount = resolvePlanBaseAmountPen("plus", profile);
+    const commissionAmount = roundCurrency(baseAmount * rateApplied);
+    const idempotencyKey = `manual_external|${partnerId}|${clientUserId}|${period}`;
+
+    const idemExists = rows.some((row) => String(row.idempotency_key || "") === idempotencyKey);
+    if (idemExists) continue;
+
+    await firestore.collection("commission_ledger").add({
+      partner_id: partnerId,
+      client_user_id: clientUserId,
+      payment_id: null,
+      payment_method: "manual_external",
+      payment_status: "external_confirmed",
+      period,
+      currency: "PEN",
+      plan_type: "plus",
+      base_amount: baseAmount,
+      rate_applied: rateApplied,
+      commission_amount: commissionAmount,
+      is_first_payment: !hasPrevious,
+      policy_version: "partner_commission_v1",
+      status: "pending",
+      entry_source: "auto_manual_plus_active",
+      idempotency_key: idempotencyKey,
+      created_at: nowIso,
+      updated_at: nowIso,
+    });
+
+    rows.push({ idempotency_key: idempotencyKey });
+    inserted += 1;
+  }
+
+  return { inserted };
+}
+
 async function createOrReusePartner({
   uid,
   email,
@@ -574,10 +677,10 @@ async function createOrReusePartner({
     commission_recurring_rate: safeNumber(commissionRecurringRate, 0.3),
     payout_method: null,
     branding: {
+      branding_text: displayName || "Partner",
+      branding_link: "",
       agency_name: displayName || "Partner",
-      logo_url: "",
-      support_text: "",
-      cta_text: "",
+      cta_url: "",
     },
     created_by: uid,
     created_by_email: email || null,
@@ -1566,6 +1669,7 @@ app.get("/api/partners/overview", async (req, res) => {
   if (!partnerId) return res.status(400).json({ error: "Missing partnerId" });
 
   try {
+    await ensureManualPlusCommissionRowsForPartner(partnerId);
     const clientsSnap = await firestore.collection("profiles").where("partner_id", "==", partnerId).get();
     const clients = clientsSnap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
     const activeClients = clients.filter((c) => String(c.subscription_status || "").toLowerCase() === "active");
@@ -1834,19 +1938,23 @@ app.put("/api/partners/branding", async (req, res) => {
   const authCtx = await requirePartnerContext(req, res, { requireAdmin: true, allowSuperAdmin: false });
   if (!authCtx) return;
 
-  const agencyName = cleanText(req.body?.agency_name).slice(0, 80);
-  const logoUrl = cleanText(req.body?.logo_url).slice(0, 500);
-  const supportText = cleanText(req.body?.support_text).slice(0, 180);
-  const ctaText = cleanText(req.body?.cta_text).slice(0, 120);
+  const brandingText = cleanText(
+    req.body?.branding_text || req.body?.agency_name || "",
+  ).slice(0, 120);
+  const brandingLink = sanitizeHttpUrl(
+    req.body?.branding_link || req.body?.cta_url || "",
+    { maxLength: 500 },
+  );
   const nowIso = new Date().toISOString();
 
   try {
     await firestore.collection("partners").doc(authCtx.partnerId).set({
       branding: {
-        agency_name: agencyName || "",
-        logo_url: logoUrl || "",
-        support_text: supportText || "",
-        cta_text: ctaText || "",
+        branding_text: brandingText || "",
+        branding_link: brandingLink || "",
+        // Compatibilidad de lecturas legacy:
+        agency_name: brandingText || "",
+        cta_url: brandingLink || "",
       },
       updated_at: nowIso,
     }, { merge: true });
@@ -1942,6 +2050,7 @@ app.get("/api/partners/commissions", async (req, res) => {
   const period = String(req.query?.period || "").trim();
 
   try {
+    await ensureManualPlusCommissionRowsForPartner(partnerId, period || toPeriodKey(new Date()));
     const snap = await firestore.collection("commission_ledger").where("partner_id", "==", partnerId).get();
     let rows = snap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
     if (period) rows = rows.filter((r) => String(r.period || "") === period);
@@ -2063,6 +2172,7 @@ app.get("/api/admin/partners", async (req, res) => {
 
   try {
     const partnersSnap = await firestore.collection("partners").get();
+    await Promise.all(partnersSnap.docs.map((docSnap) => ensureManualPlusCommissionRowsForPartner(docSnap.id)));
     const clientsSnap = await firestore.collection("profiles").get();
     const ledgerSnap = await firestore.collection("commission_ledger").get();
     const payoutsSnap = await firestore.collection("partner_payouts").get();
@@ -2223,6 +2333,7 @@ app.post("/api/admin/payouts/create", async (req, res) => {
   if (!partnerId) return res.status(400).json({ error: "Missing partner_id" });
 
   try {
+    await ensureManualPlusCommissionRowsForPartner(partnerId, period);
     const ledgerSnap = await firestore.collection("commission_ledger").where("partner_id", "==", partnerId).get();
     const eligible = ledgerSnap.docs.filter((d) => {
       const data = d.data() || {};

@@ -80,6 +80,7 @@ Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y d
 - Primer pago exitoso de cliente referido: `50%` agencia.
 - Pagos siguientes del mismo cliente: `30%` agencia.
 - Cancelacion/reactivacion no reinicia primer pago: se determina por historial de pagos pagados previos del cliente.
+- Para clientes `plus` activos atribuidos a partner, el backend genera filas `pending` en `commission_ledger` por periodo actual aun sin `payments` registrados (caso cobro externo/manual).
 
 ## Variables de entorno
 - `FIREBASE_SERVICE_ACCOUNT`
