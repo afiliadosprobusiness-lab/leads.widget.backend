@@ -1216,7 +1216,14 @@ app.post("/api/admin/delete-user", async (req, res) => {
 
     const profileRef = firestore.collection("profiles").doc(targetUserId);
     const profileSnap = await profileRef.get();
-    const targetEmail = (profileSnap.data()?.email || "").toLowerCase();
+    let authUserRecord = null;
+    try {
+      authUserRecord = await firebaseAdmin.auth().getUser(targetUserId);
+    } catch (error) {
+      if (error?.code !== "auth/user-not-found") throw error;
+    }
+
+    const targetEmail = String(profileSnap.data()?.email || authUserRecord?.email || "").toLowerCase();
     const targetRoleSnap = await firestore.collection("user_roles").doc(targetUserId).get();
     const targetRole = (targetRoleSnap.data()?.role || "").toLowerCase();
 
@@ -1228,15 +1235,40 @@ app.post("/api/admin/delete-user", async (req, res) => {
       .collection("widget_configs")
       .where("user_id", "==", targetUserId)
       .get();
+    const paymentsSnap = await firestore
+      .collection("payments")
+      .where("user_id", "==", targetUserId)
+      .get();
+    const visitsSnap = await firestore
+      .collection("visits")
+      .where("client_id", "==", targetUserId)
+      .get();
+    const leadsSnap = await firestore
+      .collection("leads")
+      .where("client_id", "==", targetUserId)
+      .get();
 
     const batch = firestore.batch();
     batch.delete(profileRef);
     batch.delete(firestore.collection("user_roles").doc(targetUserId));
+    batch.delete(firestore.collection("partner_users").doc(targetUserId));
 
     configSnap.docs.forEach((d) => batch.delete(d.ref));
+    paymentsSnap.docs.forEach((d) => batch.delete(d.ref));
+    visitsSnap.docs.forEach((d) => batch.delete(d.ref));
+    leadsSnap.docs.forEach((d) => batch.delete(d.ref));
+
+    let authDeleted = false;
+    try {
+      await firebaseAdmin.auth().deleteUser(targetUserId);
+      authDeleted = true;
+    } catch (error) {
+      if (error?.code !== "auth/user-not-found") throw error;
+    }
+
     await batch.commit();
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, auth_deleted: authDeleted });
   } catch (error) {
     console.error("admin delete user error", error);
     return res.status(500).json({ error: "Failed to delete user" });

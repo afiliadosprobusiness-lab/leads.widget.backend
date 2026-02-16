@@ -19,6 +19,8 @@ Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y d
 - Seguridad de pago:
   - `/api/verify-payment` ahora asume `ALLOW_INSECURE_VERIFY_PAYMENT=false` por defecto.
   - Se recomienda Bearer token siempre.
+- Seguridad operativa:
+  - `POST /api/admin/delete-user` ejecuta borrado completo de cuenta (Firebase Auth + datos principales en Firestore).
 
 ## Partner Program (nuevo)
 ### Roles

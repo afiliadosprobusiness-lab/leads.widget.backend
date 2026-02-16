@@ -182,8 +182,10 @@ Base detectada:
   - `Authorization: Bearer <Firebase ID token>` (requerido)
 - Body JSON:
   - `userId` (requerido)
+- Comportamiento:
+  - Elimina acceso en Firebase Auth (`deleteUser`) y borra datos principales en Firestore (`profiles`, `user_roles`, `partner_users`, `widget_configs`, `payments`, `visits`, `leads`).
 - Respuestas:
-  - `200`: `{ success: true }`
+  - `200`: `{ success: true, auth_deleted: boolean }`
   - `400`: `{ error: "Missing userId" }`
   - `401`: `{ error: "Unauthorized" }`
   - `403`: `{ error: "Forbidden" }`
@@ -332,3 +334,7 @@ Cambios de comportamiento relevantes:
 - Cambio: agregado modulo Partner Program, endpoints partner/admin y reglas de comision/branding server-side
 - Tipo: non-breaking
 - Impacto: se mantienen rutas legacy; se suman nuevas capacidades para agencias y superadmin
+- Fecha: 2026-02-16
+- Cambio: `POST /api/admin/delete-user` pasa de soft delete a borrado completo de acceso (Firebase Auth + datos principales)
+- Tipo: non-breaking
+- Impacto: permite re-registro inmediato con el mismo email luego de eliminacion por superadmin
