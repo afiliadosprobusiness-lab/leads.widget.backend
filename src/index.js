@@ -1578,6 +1578,7 @@ app.post("/api/partners/checkout-links", async (req, res) => {
     const partner = partnerSnap.data() || {};
     const partnerCode = partner.code || makeId("partner");
     const checkoutUrl = buildPartnerCheckoutUrl(req, {
+      account: "client",
       partner_code: partnerCode,
       utm_source: utm_source || "partner",
       utm_medium: utm_medium || "referral",
@@ -1685,6 +1686,7 @@ app.post("/api/partners/drafts", async (req, res) => {
     const nowIso = new Date().toISOString();
     const draftRef = firestore.collection("partner_client_drafts").doc();
     const checkoutUrl = buildPartnerCheckoutUrl(req, {
+      account: "client",
       partner_code: partnerCode,
       draft: draftRef.id,
       plan: normalizedPlanType,

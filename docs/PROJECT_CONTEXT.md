@@ -68,6 +68,7 @@ Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y d
 ### Resiliencia de roles partner
 - `POST /api/users/bootstrap` incluye auto-recuperacion de membresia en `partner_users` para cuentas de agencia (`account_type` partner) cuando existe `partner_id` pero falta el documento de membresia.
 - Este guardrail evita que una cuenta partner caiga al dashboard cliente por inconsistencias de datos.
+- Los links generados por partner se emiten con `account=client` para mantener claro el flujo de alta de clientes referidos.
 
 ## Reglas de comision implementadas
 - Primer pago exitoso de cliente referido: `50%` agencia.
