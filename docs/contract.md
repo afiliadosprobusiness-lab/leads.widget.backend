@@ -283,3 +283,52 @@ Comportamientos actuales que clientes ya consumen:
 - `POST /api/verify-payment` es idempotente por `orderID` (`paypal_order_id`).
 - CORS acepta `GET,POST,OPTIONS` y header `Authorization`.
 
+
+## Extensiones Partner Program (2026-02-16)
+
+Nuevos modelos observados:
+- `partners`
+- `partner_users`
+- `partner_invites`
+- `partner_checkout_links`
+- `partner_leads`
+- `partner_client_drafts`
+- `partner_tickets`
+- `commission_ledger`
+- `partner_payouts`
+- `audit_events`
+
+Nuevos endpoints backend:
+- `POST /api/admin/payments/:paymentId/verify`
+- `GET /api/partners/me`
+- `GET /api/partners/overview`
+- `GET /api/partners/clients`
+- `POST|GET /api/partners/checkout-links`
+- `POST|GET /api/partners/leads`
+- `POST|GET /api/partners/drafts`
+- `GET|PUT /api/partners/branding`
+- `POST|GET /api/partners/tickets`
+- `GET /api/partners/commissions` (`?format=csv` opcional)
+- `GET /api/partners/payouts`
+- `PUT /api/partners/payout-method`
+- `GET /api/partners/users`
+- `POST /api/partners/users/invite`
+- `GET /api/admin/partners`
+- `PATCH /api/admin/partners/:partnerId`
+- `GET /api/admin/partners/:partnerId/clients`
+- `POST /api/admin/partners/:partnerId/reassign-client`
+- `POST /api/admin/commissions/:ledgerId/approve`
+- `POST /api/admin/payouts/create`
+- `POST /api/admin/payouts/:payoutId/mark-paid`
+
+Cambios de comportamiento relevantes:
+- `POST /api/verify-payment` ahora considera `ALLOW_INSECURE_VERIFY_PAYMENT=false` como default recomendado.
+- `POST /api/verify-payment` y verificacion manual admin generan `commission_ledger` cuando existe `partner_id`.
+- Politica de comisiones implementada: primer pago 50%, pagos siguientes 30%; no se reinicia por cancelacion/reactivacion.
+- White-label reforzado server-side: solo `plan_type=plus` permite ocultar o personalizar branding.
+
+### Changelog del Contrato
+- Fecha: 2026-02-16
+- Cambio: agregado modulo Partner Program, endpoints partner/admin y reglas de comision/branding server-side
+- Tipo: non-breaking
+- Impacto: se mantienen rutas legacy; se suman nuevas capacidades para agencias y superadmin

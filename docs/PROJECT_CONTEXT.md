@@ -1,48 +1,76 @@
 # Lead Widget (Backend Externo) - Project Context
 
 ## Objetivo de negocio
-Backend externo para Lead Widget: sirve el script embebible del widget, procesa chat IA (OpenAI), tracking de eventos y verificacion/activacion de pagos. Disenado para Cloud Run y compatible con contratos tipo Vercel API.
+Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y desde 2026-02-16 modulo Partner Program (agencias) con RBAC y scoping server-side.
 
 ## Tech Stack
-- Runtime: Node.js (>= 20) en Cloud Run
+- Runtime: Node.js >= 20
 - Framework: Express
 - Auth/DB: Firebase Admin SDK (Auth + Firestore)
-- IA: OpenAI SDK (solo backend)
-- Deploy: Google Cloud Run
+- IA: OpenAI SDK
+- Deploy: Cloud Run
 
 ## Arquitectura (decisiones clave)
-- Servicio stateless:
-  - Persistencia en Firestore.
-  - Endpoint del script embebible (`/api/w/:widgetId.js`) debe ser rapido, cacheable y seguro.
-- Tracking embebido declarativo:
-  - Solo se aceptan IDs oficiales: `facebook_pixel_id`, `tiktok_pixel_id`, `google_tag_id`.
-  - El backend genera snippets oficiales de Meta/TikTok/Google desde esos IDs.
-  - `custom_tracking_code` y `custom_code` se ignoran de forma segura (no se ejecutan ni se exponen desde datos de usuario).
-  - Validacion estricta por allowlist regex + longitud maxima; valores vacios se normalizan a `null`.
-- Seguridad:
-  - `FIREBASE_SERVICE_ACCOUNT` y `OPENAI_API_KEY` solo en Cloud Run.
-  - CORS restringido por `CORS_ORIGINS` (CSV).
-- Compatibilidad:
-  - Mantener paths compatibles con despliegues previos (Vercel functions).
-  - Respuestas de `/api/chat` y `/api/track` estables para no romper el widget instalado.
-  - `/api/w/:widgetId.js` mantiene contrato y hace fallback silencioso si faltan IDs.
+- Servicio stateless con Firestore como persistencia.
+- Compatibilidad backward de rutas existentes (`/api/chat`, `/api/track`, `/api/w/:widgetId.js`, `/api/widget-config/:identity`).
+- White-label reforzado server-side:
+  - Plan `pro` (30): no puede ocultar marca.
+  - Plan `plus` (60): permite `hide_branding`/branding custom.
+- Seguridad de pago:
+  - `/api/verify-payment` ahora asume `ALLOW_INSECURE_VERIFY_PAYMENT=false` por defecto.
+  - Se recomienda Bearer token siempre.
 
-## Endpoints (alto nivel)
-- `GET /health`
-- `POST /api/chat`
-- `POST /api/track`
-- `POST /api/verify-payment`
-- `GET /api/w/:widgetId.js`
-- `GET /api/widget-config/:identity`
+## Partner Program (nuevo)
+### Roles
+- `partner_admin`
+- `partner_staff`
+- `superadmin`
 
-## Convenciones de codigo
-- ESM (`type: module`).
-- Validar inputs en el borde (si no hay zod, mantener checks manuales consistentes).
-- Errores: HTTP status correctos y sin filtrar secretos.
+### Colecciones nuevas (Firestore)
+- `partners`
+- `partner_users`
+- `partner_invites`
+- `partner_checkout_links`
+- `partner_leads`
+- `partner_client_drafts`
+- `partner_tickets`
+- `commission_ledger`
+- `partner_payouts`
+- `audit_events`
 
-## Variables de entorno (resumen)
+### Endpoints nuevos
+- Partner:
+  - `GET /api/partners/me`
+  - `GET /api/partners/overview`
+  - `GET /api/partners/clients`
+  - `POST|GET /api/partners/checkout-links`
+  - `POST|GET /api/partners/leads`
+  - `POST|GET /api/partners/drafts`
+  - `GET|PUT /api/partners/branding`
+  - `POST|GET /api/partners/tickets`
+  - `GET /api/partners/commissions` (+ `?format=csv`)
+  - `GET /api/partners/payouts`
+  - `PUT /api/partners/payout-method`
+  - `GET /api/partners/users`
+  - `POST /api/partners/users/invite`
+- Superadmin agencias:
+  - `POST /api/admin/payments/:paymentId/verify`
+  - `GET /api/admin/partners`
+  - `PATCH /api/admin/partners/:partnerId`
+  - `GET /api/admin/partners/:partnerId/clients`
+  - `POST /api/admin/partners/:partnerId/reassign-client`
+  - `POST /api/admin/commissions/:ledgerId/approve`
+  - `POST /api/admin/payouts/create`
+  - `POST /api/admin/payouts/:payoutId/mark-paid`
+
+## Reglas de comision implementadas
+- Primer pago exitoso de cliente referido: `50%` agencia.
+- Pagos siguientes del mismo cliente: `30%` agencia.
+- Cancelacion/reactivacion no reinicia primer pago: se determina por historial de pagos pagados previos del cliente.
+
+## Variables de entorno
 - `FIREBASE_SERVICE_ACCOUNT`
 - `OPENAI_API_KEY`
-- PayPal: `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENV`
-- CORS/URLs: `CORS_ORIGINS`, `PUBLIC_APP_URL`, `WIDGET_EMBED_URL` (opcional)
-- Seguridad: `ALLOW_INSECURE_VERIFY_PAYMENT` (debe ser `false` en produccion idealmente)
+- `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENV`
+- `CORS_ORIGINS`, `PUBLIC_APP_URL`, `WIDGET_EMBED_URL`
+- `ALLOW_INSECURE_VERIFY_PAYMENT` (default seguro recomendado: `false`)
