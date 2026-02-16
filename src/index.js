@@ -1072,7 +1072,34 @@ app.post("/api/users/bootstrap", async (req, res) => {
         role = normalizePartnerRole(membership.role);
         partnerId = membership.partner_id;
       } else {
-        role = "client";
+        const profileRecoverySnap = await profileRef.get();
+        const profileRecovery = profileRecoverySnap.exists ? (profileRecoverySnap.data() || {}) : {};
+        const accountType = String(profileRecovery.account_type || "").toLowerCase();
+        const recoverablePartnerId = profileRecovery.partner_id || null;
+        const recoverableRole = normalizePartnerRole(profileRecovery.partner_role || "partner_admin");
+
+        // Safety net: recover broken partner membership only for agency accounts.
+        if ((accountType === "partner_user" || accountType === "partner") && recoverablePartnerId) {
+          const partnerSnap = await firestore.collection("partners").doc(recoverablePartnerId).get();
+          const partnerStatus = String(partnerSnap.exists ? (partnerSnap.data()?.status || "active") : "missing").toLowerCase();
+
+          if (partnerSnap.exists && partnerStatus !== "suspended") {
+            await firestore.collection("partner_users").doc(uid).set({
+              partner_id: recoverablePartnerId,
+              role: recoverableRole,
+              status: "active",
+              email: decoded.email || null,
+              updated_at: now,
+            }, { merge: true });
+
+            role = recoverableRole;
+            partnerId = recoverablePartnerId;
+          } else {
+            role = "client";
+          }
+        } else {
+          role = "client";
+        }
       }
     }
 
