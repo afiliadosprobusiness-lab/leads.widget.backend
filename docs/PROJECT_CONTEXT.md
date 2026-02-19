@@ -27,7 +27,7 @@ Actualizacion de objetivo (2026-02-19):
   - Se recomienda Bearer token siempre.
 - Seguridad operativa:
   - `POST /api/admin/delete-user` ejecuta borrado completo de cuenta (Firebase Auth + datos principales en Firestore).
-- Para `widgetId=demo-landing`, el prompt por defecto contempla preguntas comerciales y del programa Partners (comisiones, rutas y modelo de cobro).
+- Para `widgetId=demo-landing`, el prompt por defecto contempla preguntas comerciales, programa Partners y la oferta Lead Chat + IACloser (consentimiento explicito + llamada outbound <60s), manteniendo compatibilidad del tag `[WHATSAPP_REDIRECT: ...]` para cierre del demo embebido.
 - Nuevo flujo comercial objetivo (en implementacion, no rompe legacy):
   1. Usuario abre chat.
   2. Bot conversa y califica.
