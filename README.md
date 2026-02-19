@@ -21,6 +21,9 @@ Backend externo para Lead Widget con contratos compatibles de Vercel API.
 - `PUBLIC_APP_URL`
 - `WIDGET_EMBED_URL` (opcional)
 - `ALLOW_INSECURE_VERIFY_PAYMENT` (`true|false`)
+- `IACLOSER_API_URL` (opcional, default: `https://ai-call-closer-saas.vercel.app/api/leads/handoff`)
+- `IACLOSER_API_KEY` (Bearer token para IACloser)
+- `IACLOSER_DEFAULT_REDIRECT_URL` (opcional)
 
 ## Desarrollo local
 

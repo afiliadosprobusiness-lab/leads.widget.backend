@@ -21,6 +21,7 @@ const PLAN_BASE_AMOUNT_PEN = Object.freeze({
   pro: 30,
   plus: 60,
 });
+const DEFAULT_IACLOSER_API_URL = "https://ai-call-closer-saas.vercel.app/api/leads/handoff";
 
 const corsOrigins = (process.env.CORS_ORIGINS || "*")
   .split(",")
@@ -114,6 +115,29 @@ const MAX_GOOGLE_TAG_ID_LENGTH = 32;
 function cleanText(value) {
   if (typeof value !== "string") return "";
   return value.trim();
+}
+
+function getIaCloserApiUrl() {
+  return cleanText(process.env.IACLOSER_API_URL || "") || DEFAULT_IACLOSER_API_URL;
+}
+
+function getIaCloserApiKey() {
+  return cleanText(process.env.IACLOSER_API_KEY || "");
+}
+
+function parseEtaSeconds(value, fallback = 60) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized < 0) return fallback;
+  return Math.round(normalized);
+}
+
+function normalizeConsentAnswer(value) {
+  return cleanText(value).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function hasExplicitConsentYes(value) {
+  const normalized = normalizeConsentAnswer(value);
+  return normalized === "si" || normalized === "yes";
 }
 
 function sanitizeHttpUrl(value, { maxLength = 500 } = {}) {
@@ -347,7 +371,7 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partner
     consentText,
     consentTextVersion,
     iacloserRedirectUrl,
-    iacloserEnabled: Boolean(iacloserRedirectUrl || cleanText(process.env.IACLOSER_API_URL || "")),
+    iacloserEnabled: Boolean(iacloserRedirectUrl || getIaCloserApiUrl()),
     leadChatHeadline,
     leadChatSubheadline,
     leadChatEyebrow,
@@ -1013,8 +1037,8 @@ app.post("/api/chat", async (req, res) => {
         ? [
             "You are a helpful assistant for this business.",
             "Your goal is to qualify leads in chat and prepare fast outbound call handoff.",
-            "Flow: qualify -> ask name and phone -> confirm buying intent -> then append [ICLOSER_READY:{\"name\":\"...\",\"phone\":\"...\",\"collected_info\":\"...\"}] at the end.",
-            "Do not emit ICLOSER command for informational-only requests.",
+            "Flow: qualify -> ask name and phone -> confirm buying intent -> explain explicit contact consent is required -> then append [ICALLCLOSER_READY:{\"name\":\"...\",\"phone\":\"...\",\"collected_info\":\"...\"}] at the end.",
+            "Do not emit ICallCloser command for informational-only requests.",
             "Keep replies short and practical.",
           ].join(" ")
         : "You are a helpful assistant for this business. Keep replies short and practical.";
@@ -1105,6 +1129,11 @@ app.post("/api/icloser/handoff", async (req, res) => {
   const collectedInfo = cleanText(req.body?.collectedInfo || "");
   const history = Array.isArray(req.body?.history) ? req.body.history : [];
   const consentAccepted = req.body?.consent?.accepted === true;
+  const consentExplicitResponse = cleanText(
+    req.body?.consent?.explicitResponse
+    || req.body?.consent?.explicit_response
+    || "",
+  );
   const consentTextVersion = cleanText(req.body?.consent?.textVersion || "v1");
   const consentText = cleanText(req.body?.consent?.text || "");
   const clientIp = clientIpFrom(req);
@@ -1121,6 +1150,9 @@ app.post("/api/icloser/handoff", async (req, res) => {
   }
   if (!consentAccepted) {
     return res.status(400).json({ error: "Explicit consent is required" });
+  }
+  if (!hasExplicitConsentYes(consentExplicitResponse)) {
+    return res.status(400).json({ error: "Explicit consent response 'SI' is required" });
   }
 
   const nowIso = new Date().toISOString();
@@ -1156,6 +1188,7 @@ app.post("/api/icloser/handoff", async (req, res) => {
         accepted_at: nowIso,
         text_version: consentTextVersion,
         text: consentText || publicConfig.consentText || "",
+        explicit_response: consentExplicitResponse,
         ip: clientIp,
         user_agent: userAgent,
       },
@@ -1168,8 +1201,8 @@ app.post("/api/icloser/handoff", async (req, res) => {
         })),
     };
 
-    const iacloserApiUrl = cleanText(process.env.IACLOSER_API_URL || "");
-    const iacloserApiKey = cleanText(process.env.IACLOSER_API_KEY || "");
+    const iacloserApiUrl = getIaCloserApiUrl();
+    const iacloserApiKey = getIaCloserApiKey();
     const defaultRedirect = sanitizeHttpUrl(
       publicConfig.iacloserRedirectUrl || process.env.IACLOSER_DEFAULT_REDIRECT_URL || "",
     );
@@ -1223,10 +1256,21 @@ app.post("/api/icloser/handoff", async (req, res) => {
       clearTimeout(timeout);
     }
 
+    const upstreamObject = upstreamJson && typeof upstreamJson === "object" ? upstreamJson : {};
+    const upstreamLeadId = cleanText(
+      String(upstreamObject?.lead_id || upstreamObject?.leadId || upstreamObject?.id || ""),
+    );
+    const queuedCallInSeconds = parseEtaSeconds(
+      upstreamObject?.eta_seconds
+        ?? upstreamObject?.etaSeconds
+        ?? upstreamObject?.queuedCallInSeconds
+        ?? 60,
+      60,
+    );
     const upstreamRedirect = sanitizeHttpUrl(
-      upstreamJson?.redirect_url
-      || upstreamJson?.redirectUrl
-      || upstreamJson?.landing_url
+      upstreamObject?.redirect_url
+      || upstreamObject?.redirectUrl
+      || upstreamObject?.landing_url
       || "",
     );
     const redirectUrl = upstreamRedirect || defaultRedirect;
@@ -1244,6 +1288,8 @@ app.post("/api/icloser/handoff", async (req, res) => {
       },
       consent: handoffPayload.consent,
       redirect_url: redirectUrl || null,
+      upstream_lead_id: upstreamLeadId || null,
+      eta_seconds: queuedCallInSeconds,
       created_at: nowIso,
     });
 
@@ -1261,8 +1307,13 @@ app.post("/api/icloser/handoff", async (req, res) => {
     return res.status(200).json({
       success: true,
       handoffId: handoffRef.id,
+      leadId: upstreamLeadId || null,
+      lead_id: upstreamLeadId || null,
       redirectUrl: redirectUrl || null,
-      queuedCallInSeconds: 60,
+      redirect_url: redirectUrl || null,
+      queuedCallInSeconds,
+      etaSeconds: queuedCallInSeconds,
+      eta_seconds: queuedCallInSeconds,
     });
   } catch (error) {
     console.error("icloser handoff error", error);

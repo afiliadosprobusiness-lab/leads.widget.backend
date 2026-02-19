@@ -156,14 +156,15 @@ Base detectada:
 - Body JSON:
   - Requeridos: `widgetId`, `name`, `phone`
   - Requerido: `consent.accepted === true`
+  - Requerido: `consent.explicitResponse` con valor afirmativo explicito (`"SI"`/`"YES"`)
   - Opcionales: `collectedInfo`, `history` (array `{ role, content }`), `consent.textVersion`, `consent.text`
 - Comportamiento:
   - Valida consentimiento expreso antes de handoff.
-  - Reenvia payload JSON a API externa IACloser (si esta configurada por env vars).
+  - Reenvia payload JSON a API externa IACloser (usa `IACLOSER_API_URL` o fallback productivo por defecto).
   - Registra trazabilidad en Firestore (`lead_handoffs`) y agrega lead en `leads` con `source: "lead_chat_iacloser"`.
 - Respuestas:
-  - `200`: `{ success: true, handoffId: string, redirectUrl: string | null, queuedCallInSeconds: 60 }`
-  - `400`: `{ error: "widgetId is required" | "name is required" | "phone is required" | "Explicit consent is required" | "IACLOSER_API_URL is not configured" }`
+  - `200`: `{ success: true, handoffId: string, leadId: string | null, lead_id: string | null, redirectUrl: string | null, redirect_url: string | null, queuedCallInSeconds: number, etaSeconds: number, eta_seconds: number }`
+  - `400`: `{ error: "widgetId is required" | "name is required" | "phone is required" | "Explicit consent is required" | "Explicit consent response 'SI' is required" | "IACLOSER_API_URL is not configured" }`
   - `404`: `{ error: "Widget not found" }`
   - `502`: `{ error: "IACloser handoff failed", details?: object }`
   - `500`: `{ error: "Failed to send handoff" }`
@@ -384,3 +385,11 @@ Cambios de comportamiento relevantes:
 - Cambio: agregado flujo Lead Chat + IACloser con `POST /api/icloser/handoff`, lookup por `lead_chat_slug` y campos publicos (`experience_mode`, `lead_chat_slug`, consentimiento, redirect IACloser)
 - Tipo: non-breaking
 - Impacto: mantiene rutas legacy de widget embebido; habilita modo pagina publica para captacion y handoff con consentimiento expreso
+- Fecha: 2026-02-19
+- Cambio: `POST /api/icloser/handoff` agrega fallback productivo de `IACLOSER_API_URL` y aliases de respuesta (`lead_id`, `redirect_url`, `eta_seconds`) manteniendo campos previos
+- Tipo: non-breaking
+- Impacto: simplifica configuracion de integracion IACloser y mejora compatibilidad con shape del proveedor externo sin romper clientes existentes
+- Fecha: 2026-02-19
+- Cambio: `POST /api/icloser/handoff` exige consentimiento afirmativo explicito (`consent.explicitResponse = "SI"/"YES"`) ademas de `consent.accepted=true`
+- Tipo: non-breaking
+- Impacto: refuerza cumplimiento legal del flujo Lead Chat antes del handoff a IACloser

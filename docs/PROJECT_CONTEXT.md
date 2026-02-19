@@ -102,16 +102,22 @@ Actualizacion de objetivo (2026-02-19):
 - `ALLOW_INSECURE_VERIFY_PAYMENT` (default seguro recomendado: `false`)
 - `IACLOSER_API_URL`, `IACLOSER_API_KEY` (integracion outbound/handoff)
 - `IACLOSER_DEFAULT_REDIRECT_URL` (fallback de redireccion post-handoff)
+- Si `IACLOSER_API_URL` no esta configurada, el backend usa por defecto `https://ai-call-closer-saas.vercel.app/api/leads/handoff`.
+- Para entornos preview/staging se recomienda sobreescribir `IACLOSER_API_URL` con el dominio preview correspondiente.
 
 ## Integracion IACloser (objetivo operativo)
 - El backend debe enviar a IACloser, via API HTTP JSON, el contexto recopilado del lead durante el chat.
+- El backend autentica contra IACloser con header `Authorization: Bearer <IACLOSER_API_KEY>` cuando la llave esta configurada.
 - Payload minimo esperado por negocio:
   - `name`: nombre del lead
   - `phone`: numero para llamada outbound
   - `collected_info`: resumen estructurado de calificacion y necesidades
 - El payload debe incluir metadata de consentimiento para cumplimiento en USA:
   - `consent.accepted` (boolean)
+  - `consent.explicit_response` (respuesta afirmativa explicita: `SI`/`YES`)
   - `consent.accepted_at` (ISO datetime)
   - `consent.text_version` (version legal mostrada)
 - Regla obligatoria: sin consentimiento expreso no se envia handoff a IACloser ni se activa llamada.
+- La respuesta exitosa del endpoint local mantiene compatibilidad con `handoffId/redirectUrl/queuedCallInSeconds` y expone aliases de proveedor `lead_id/redirect_url/eta_seconds`.
+- En prompts de Lead Chat, el comando recomendado para handoff es `ICALLCLOSER_READY` y se mantiene compatibilidad con alias legacy (`ICLOSER_READY`).
 - El backend expone en `PublicWidgetConfig` ajustes visuales/comerciales de Lead Chat (eyebrow/badge superior, headline/subheadline, popup de oferta, CTA y mensajes live toast) para que el frontend los renderice desde dashboard.
