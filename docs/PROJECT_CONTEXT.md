@@ -3,6 +3,11 @@
 ## Objetivo de negocio
 Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y desde 2026-02-16 modulo Partner Program (agencias) con RBAC y scoping server-side.
 
+Actualizacion de objetivo (2026-02-19):
+- Activar flujo Lead Chat + IACloser para cierre por llamada outbound automatizada.
+- Handoff primario: envio de contexto de lead a API de IACloser + redireccion del usuario a landing/pagina IACloser.
+- Lead Chat opera como pagina publica compartible (sin requerir instalacion embebida en web del cliente).
+
 ## Tech Stack
 - Runtime: Node.js >= 20
 - Framework: Express
@@ -23,6 +28,13 @@ Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y d
 - Seguridad operativa:
   - `POST /api/admin/delete-user` ejecuta borrado completo de cuenta (Firebase Auth + datos principales en Firestore).
 - Para `widgetId=demo-landing`, el prompt por defecto contempla preguntas comerciales y del programa Partners (comisiones, rutas y modelo de cobro).
+- Nuevo flujo comercial objetivo (en implementacion, no rompe legacy):
+  1. Usuario abre chat.
+  2. Bot conversa y califica.
+  3. Bot solicita numero.
+  4. Bot solicita consentimiento expreso.
+  5. Con consentimiento valido, backend prepara handoff.
+  6. IACloser llama al lead en menos de 60 segundos (SLA del proveedor externo).
 
 ## Partner Program (nuevo)
 ### Roles
@@ -88,3 +100,18 @@ Backend externo para Lead Widget: script embebible, chat IA, tracking, pagos y d
 - `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENV`
 - `CORS_ORIGINS`, `PUBLIC_APP_URL`, `WIDGET_EMBED_URL`
 - `ALLOW_INSECURE_VERIFY_PAYMENT` (default seguro recomendado: `false`)
+- `IACLOSER_API_URL`, `IACLOSER_API_KEY` (integracion outbound/handoff)
+- `IACLOSER_DEFAULT_REDIRECT_URL` (fallback de redireccion post-handoff)
+
+## Integracion IACloser (objetivo operativo)
+- El backend debe enviar a IACloser, via API HTTP JSON, el contexto recopilado del lead durante el chat.
+- Payload minimo esperado por negocio:
+  - `name`: nombre del lead
+  - `phone`: numero para llamada outbound
+  - `collected_info`: resumen estructurado de calificacion y necesidades
+- El payload debe incluir metadata de consentimiento para cumplimiento en USA:
+  - `consent.accepted` (boolean)
+  - `consent.accepted_at` (ISO datetime)
+  - `consent.text_version` (version legal mostrada)
+- Regla obligatoria: sin consentimiento expreso no se envia handoff a IACloser ni se activa llamada.
+- El backend expone en `PublicWidgetConfig` ajustes visuales/comerciales de Lead Chat (headline/subheadline, popup de oferta, CTA y mensajes live toast) para que el frontend los renderice desde dashboard.

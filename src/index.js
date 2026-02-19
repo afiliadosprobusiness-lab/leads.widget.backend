@@ -128,6 +128,49 @@ function sanitizeHttpUrl(value, { maxLength = 500 } = {}) {
   }
 }
 
+function sanitizePhoneNumber(value) {
+  const raw = cleanText(value);
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length < 8 || digits.length > 15) return "";
+  return digits;
+}
+
+function safeJsonParse(input, fallback = null) {
+  if (typeof input !== "string") return fallback;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return fallback;
+  }
+}
+
+function summarizeHistory(history = [], maxItems = 12) {
+  if (!Array.isArray(history)) return "";
+  return history
+    .filter((item) => item && (item.role === "user" || item.role === "assistant"))
+    .slice(-maxItems)
+    .map((item) => `${item.role}: ${cleanText(item.content || "").slice(0, 280)}`)
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function resolveLeadChatSlug(widgetData, fallbackWidgetId) {
+  const slug = cleanText(widgetData?.lead_chat_slug || "");
+  if (slug) return slug.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 64);
+  return String(fallbackWidgetId || "").toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 64);
+}
+
+function buildLeadChatUrl(slug) {
+  const base = cleanText(process.env.PUBLIC_APP_URL || "") || "https://leads-widget.vercel.app";
+  try {
+    const url = new URL(`/lead-chat/${encodeURIComponent(slug)}`, base);
+    return url.toString();
+  } catch {
+    return `https://leads-widget.vercel.app/lead-chat/${encodeURIComponent(slug)}`;
+  }
+}
+
 function buildDefaultBrandingLink(clientId) {
   const fallbackBase = "https://leads-widget.vercel.app";
   const configuredBase = cleanText(process.env.PUBLIC_APP_URL || "");
@@ -189,6 +232,9 @@ async function getWidgetConfigByIdentity(widgetId) {
   if (q.empty) {
     q = await firestore.collection("widget_configs").where("user_id", "==", widgetId).limit(1).get();
   }
+  if (q.empty) {
+    q = await firestore.collection("widget_configs").where("lead_chat_slug", "==", widgetId).limit(1).get();
+  }
   if (q.empty) return null;
 
   const doc = q.docs[0];
@@ -198,6 +244,25 @@ async function getWidgetConfigByIdentity(widgetId) {
 function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partnerData = {}) {
   const fallbackWidgetId = widgetData?.widget_id || widgetData?.id || identity;
   const resolvedClientId = widgetData?.user_id || identity;
+  const leadChatSlug = resolveLeadChatSlug(widgetData, fallbackWidgetId);
+  const consentText = cleanText(widgetData?.consent_text || "")
+    || "Acepto ser contactado por telefono o mensajes para continuar con mi solicitud.";
+  const consentTextVersion = cleanText(widgetData?.consent_text_version || "") || "v1";
+  const iacloserRedirectUrl = sanitizeHttpUrl(
+    widgetData?.icloser_redirect_url || process.env.IACLOSER_DEFAULT_REDIRECT_URL || "",
+  );
+  const experienceModeRaw = cleanText(widgetData?.experience_mode || "").toLowerCase();
+  const experienceMode = experienceModeRaw === "lead_chat" ? "lead_chat" : "widget";
+  const leadChatHeadline = cleanText(widgetData?.lead_chat_headline || "");
+  const leadChatSubheadline = cleanText(widgetData?.lead_chat_subheadline || "");
+  const leadChatOfferTitle = cleanText(widgetData?.lead_chat_offer_title || "");
+  const leadChatOfferDescription = cleanText(widgetData?.lead_chat_offer_description || "");
+  const leadChatCtaLabel = cleanText(widgetData?.lead_chat_cta_label || "");
+  const leadChatLiveToasts = Array.isArray(widgetData?.lead_chat_live_toasts)
+    ? widgetData.lead_chat_live_toasts.map((value) => cleanText(value)).filter(Boolean).slice(0, 12)
+    : (typeof widgetData?.lead_chat_live_toasts === "string"
+      ? widgetData.lead_chat_live_toasts.split("\n").map((value) => cleanText(value)).filter(Boolean).slice(0, 12)
+      : []);
   const trackingConfig = buildTrackingConfig(widgetData);
   const clientPlanType = String(profileData?.plan_type || "").toLowerCase();
   const canUseCustomBranding = clientPlanType === "plus";
@@ -274,6 +339,19 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partner
     facebookPixelId: trackingConfig.facebookPixelId,
     tiktokPixelId: trackingConfig.tiktokPixelId,
     googleTagId: trackingConfig.googleTagId,
+    experienceMode,
+    leadChatSlug,
+    leadChatUrl: buildLeadChatUrl(leadChatSlug),
+    consentText,
+    consentTextVersion,
+    iacloserRedirectUrl,
+    iacloserEnabled: Boolean(iacloserRedirectUrl || cleanText(process.env.IACLOSER_API_URL || "")),
+    leadChatHeadline,
+    leadChatSubheadline,
+    leadChatOfferTitle,
+    leadChatOfferDescription,
+    leadChatCtaLabel,
+    leadChatLiveToasts,
     customTrackingCode: "",
     updatedAt: widgetData?.updated_at || widgetData?.created_at || null,
   };
@@ -387,6 +465,20 @@ async function getPartnerMembership(uid) {
     email: data.email || null,
     invited_by: data.invited_by || null,
   };
+}
+
+function isClientAccountProfile(profile = {}) {
+  const accountType = String(profile?.account_type || "").toLowerCase();
+  if (!accountType) return true;
+  return !accountType.startsWith("partner");
+}
+
+async function getPartnerInternalUserIds(partnerId) {
+  if (!partnerId) return new Set();
+  const snap = await firestore.collection("partner_users").where("partner_id", "==", partnerId).get();
+  const internalUserIds = new Set();
+  snap.docs.forEach((docSnap) => internalUserIds.add(docSnap.id));
+  return internalUserIds;
 }
 
 async function buildAuthContext(req) {
@@ -897,6 +989,8 @@ app.post("/api/chat", async (req, res) => {
 
     const tz = userTimezone || "America/Lima";
     const nowUser = new Date().toLocaleString("en-US", { timeZone: tz });
+    const isLeadChatMode = widgetId !== "demo-landing"
+      && String(widgetData?.experience_mode || "").toLowerCase() === "lead_chat";
 
     const defaultPrompt = widgetId === "demo-landing"
       ? [
@@ -908,7 +1002,15 @@ app.post("/api/chat", async (req, res) => {
           "Do not use [WHATSAPP_REDIRECT: ...] for informational-only questions.",
           "Keep replies short and practical.",
         ].join(" ")
-      : "You are a helpful assistant for this business. Keep replies short and practical.";
+      : isLeadChatMode
+        ? [
+            "You are a helpful assistant for this business.",
+            "Your goal is to qualify leads in chat and prepare fast outbound call handoff.",
+            "Flow: qualify -> ask name and phone -> confirm buying intent -> then append [ICLOSER_READY:{\"name\":\"...\",\"phone\":\"...\",\"collected_info\":\"...\"}] at the end.",
+            "Do not emit ICLOSER command for informational-only requests.",
+            "Keep replies short and practical.",
+          ].join(" ")
+        : "You are a helpful assistant for this business. Keep replies short and practical.";
 
     const systemPrompt =
       `CURRENT DATE/TIME FOR USER: ${nowUser} (Timezone: ${tz})\n\n` +
@@ -986,6 +1088,178 @@ app.post("/api/chat", async (req, res) => {
     return res.status(200).json({
       response: `Technical error: ${error?.message || "unknown"}`,
     });
+  }
+});
+
+app.post("/api/icloser/handoff", async (req, res) => {
+  const widgetId = cleanText(req.body?.widgetId || "");
+  const name = cleanText(req.body?.name || "");
+  const phone = sanitizePhoneNumber(req.body?.phone || "");
+  const collectedInfo = cleanText(req.body?.collectedInfo || "");
+  const history = Array.isArray(req.body?.history) ? req.body.history : [];
+  const consentAccepted = req.body?.consent?.accepted === true;
+  const consentTextVersion = cleanText(req.body?.consent?.textVersion || "v1");
+  const consentText = cleanText(req.body?.consent?.text || "");
+  const clientIp = clientIpFrom(req);
+  const userAgent = cleanText(req.headers["user-agent"] || "");
+
+  if (!widgetId) {
+    return res.status(400).json({ error: "widgetId is required" });
+  }
+  if (!name) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  if (!phone) {
+    return res.status(400).json({ error: "phone is required" });
+  }
+  if (!consentAccepted) {
+    return res.status(400).json({ error: "Explicit consent is required" });
+  }
+
+  const nowIso = new Date().toISOString();
+
+  try {
+    const widgetData = await getWidgetConfigByIdentity(widgetId);
+    if (!widgetData) {
+      return res.status(404).json({ error: "Widget not found" });
+    }
+
+    const profileDoc = await firestore.collection("profiles").doc(widgetData.user_id).get();
+    const profileData = profileDoc.exists ? (profileDoc.data() || {}) : {};
+
+    const publicConfig = mapWidgetToPublicConfig(widgetData, profileData, widgetId);
+    const fallbackCollectedInfo = summarizeHistory(history);
+    const safeCollectedInfo = collectedInfo || fallbackCollectedInfo || "Lead qualified via chat";
+
+    const handoffPayload = {
+      source: {
+        product: "leads.widget",
+        widget_id: publicConfig.widgetId,
+        client_id: publicConfig.clientId,
+        lead_chat_slug: publicConfig.leadChatSlug,
+        sent_at: nowIso,
+      },
+      lead: {
+        name,
+        phone,
+        collected_info: safeCollectedInfo,
+      },
+      consent: {
+        accepted: true,
+        accepted_at: nowIso,
+        text_version: consentTextVersion,
+        text: consentText || publicConfig.consentText || "",
+        ip: clientIp,
+        user_agent: userAgent,
+      },
+      history: history
+        .filter((item) => item && (item.role === "user" || item.role === "assistant"))
+        .slice(-20)
+        .map((item) => ({
+          role: item.role,
+          content: cleanText(item.content || "").slice(0, 1500),
+        })),
+    };
+
+    const iacloserApiUrl = cleanText(process.env.IACLOSER_API_URL || "");
+    const iacloserApiKey = cleanText(process.env.IACLOSER_API_KEY || "");
+    const defaultRedirect = sanitizeHttpUrl(
+      publicConfig.iacloserRedirectUrl || process.env.IACLOSER_DEFAULT_REDIRECT_URL || "",
+    );
+
+    if (!iacloserApiUrl) {
+      return res.status(400).json({
+        error: "IACLOSER_API_URL is not configured",
+      });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    let upstreamJson = {};
+    let upstreamStatus = 0;
+    try {
+      const upstream = await fetch(iacloserApiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(iacloserApiKey ? { Authorization: `Bearer ${iacloserApiKey}` } : {}),
+        },
+        body: JSON.stringify(handoffPayload),
+        signal: controller.signal,
+      });
+      upstreamStatus = upstream.status;
+      const upstreamText = await upstream.text();
+      upstreamJson = safeJsonParse(upstreamText, { raw: upstreamText }) || {};
+
+      if (!upstream.ok) {
+        await firestore.collection("lead_handoffs").add({
+          widget_id: publicConfig.widgetId,
+          client_id: publicConfig.clientId,
+          status: "failed",
+          upstream_status: upstream.status,
+          upstream_response: typeof upstreamJson === "object" ? upstreamJson : { raw: String(upstreamJson || "") },
+          payload_preview: {
+            name,
+            phone,
+            collected_info: safeCollectedInfo.slice(0, 500),
+          },
+          consent: handoffPayload.consent,
+          created_at: nowIso,
+        });
+        return res.status(502).json({
+          error: "IACloser handoff failed",
+          details: typeof upstreamJson === "object" ? upstreamJson : undefined,
+        });
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const upstreamRedirect = sanitizeHttpUrl(
+      upstreamJson?.redirect_url
+      || upstreamJson?.redirectUrl
+      || upstreamJson?.landing_url
+      || "",
+    );
+    const redirectUrl = upstreamRedirect || defaultRedirect;
+
+    const handoffRef = await firestore.collection("lead_handoffs").add({
+      widget_id: publicConfig.widgetId,
+      client_id: publicConfig.clientId,
+      status: "sent",
+      upstream_status: upstreamStatus,
+      upstream_response: typeof upstreamJson === "object" ? upstreamJson : { raw: String(upstreamJson || "") },
+      payload_preview: {
+        name,
+        phone,
+        collected_info: safeCollectedInfo.slice(0, 1000),
+      },
+      consent: handoffPayload.consent,
+      redirect_url: redirectUrl || null,
+      created_at: nowIso,
+    });
+
+    await firestore.collection("leads").add({
+      client_id: publicConfig.clientId,
+      widget_id: publicConfig.widgetId,
+      name,
+      phone,
+      interest: safeCollectedInfo.slice(0, 1900),
+      source: "lead_chat_iacloser",
+      status: "handoff_sent",
+      created_at: nowIso,
+    });
+
+    return res.status(200).json({
+      success: true,
+      handoffId: handoffRef.id,
+      redirectUrl: redirectUrl || null,
+      queuedCallInSeconds: 60,
+    });
+  } catch (error) {
+    console.error("icloser handoff error", error);
+    return res.status(500).json({ error: "Failed to send handoff" });
   }
 });
 
@@ -2481,6 +2755,14 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
     }
     const publicConfig = mapWidgetToPublicConfig(widgetData, profileData, widgetId, partnerData);
 
+    if (publicConfig.experienceMode === "lead_chat") {
+      const leadChatUrl = publicConfig.leadChatUrl || "";
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      return res.status(200).send(
+        `console.warn("LeadWidget: This account uses Lead Chat page mode. Use ${leadChatUrl}");`,
+      );
+    }
+
     if (profileData?.subscription_status === "suspended") {
       res.setHeader("Content-Type", "application/javascript");
       return res.status(200).send('console.warn("LeadWidget: Service suspended for this account.");');
@@ -2505,6 +2787,19 @@ app.get("/api/w/:widgetId.js", async (req, res) => {
     facebookPixelId: ${JSON.stringify(publicConfig.facebookPixelId)},
     tiktokPixelId: ${JSON.stringify(publicConfig.tiktokPixelId)},
     googleTagId: ${JSON.stringify(publicConfig.googleTagId)},
+    experienceMode: ${JSON.stringify(publicConfig.experienceMode || "widget")},
+    leadChatSlug: ${JSON.stringify(publicConfig.leadChatSlug || "")},
+    leadChatUrl: ${JSON.stringify(publicConfig.leadChatUrl || "")},
+    consentText: ${JSON.stringify(publicConfig.consentText || "")},
+    consentTextVersion: ${JSON.stringify(publicConfig.consentTextVersion || "v1")},
+    iacloserRedirectUrl: ${JSON.stringify(publicConfig.iacloserRedirectUrl || "")},
+    iacloserEnabled: ${JSON.stringify(publicConfig.iacloserEnabled === true)},
+    leadChatHeadline: ${JSON.stringify(publicConfig.leadChatHeadline || "")},
+    leadChatSubheadline: ${JSON.stringify(publicConfig.leadChatSubheadline || "")},
+    leadChatOfferTitle: ${JSON.stringify(publicConfig.leadChatOfferTitle || "")},
+    leadChatOfferDescription: ${JSON.stringify(publicConfig.leadChatOfferDescription || "")},
+    leadChatCtaLabel: ${JSON.stringify(publicConfig.leadChatCtaLabel || "")},
+    leadChatLiveToasts: ${JSON.stringify(publicConfig.leadChatLiveToasts || [])},
     customTrackingCode: "",
     hideBranding: ${JSON.stringify(publicConfig.hideBranding)},
     brandingText: ${JSON.stringify(publicConfig.brandingText || "")},

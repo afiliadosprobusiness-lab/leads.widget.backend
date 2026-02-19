@@ -51,6 +51,7 @@ Campos observados:
 
 - Identidad: `user_id`, `widget_id`
 - Branding/UI: `business_name`, `primary_color`, `welcome_message`, `chat_placeholder`, `launcher_icon`, `hide_branding`, `branding_text`, `branding_link`, `language`, `template`
+- Lead Chat/Closer: `experience_mode`, `lead_chat_slug`, `consent_text`, `consent_text_version`, `icloser_redirect_url`, `lead_chat_headline`, `lead_chat_subheadline`, `lead_chat_offer_title`, `lead_chat_offer_description`, `lead_chat_cta_label`, `lead_chat_live_toasts`
 - WhatsApp y flujo: `whatsapp_destination`, `niche_question`
 - Triggers: `trigger_delay`, `trigger_exit_intent`, `exit_intent_title`, `exit_intent_description`, `exit_intent_cta`, `vibration_intensity`
 - Mensajeria: `teaser_messages` (array o string), `quick_replies` (array o string)
@@ -150,6 +151,23 @@ Base detectada:
   - `404`: `{ error: "Widget not found" }`
   - `429`: `{ response: "<texto>", rateLimited: true }`
 
+#### `POST /api/icloser/handoff`
+
+- Body JSON:
+  - Requeridos: `widgetId`, `name`, `phone`
+  - Requerido: `consent.accepted === true`
+  - Opcionales: `collectedInfo`, `history` (array `{ role, content }`), `consent.textVersion`, `consent.text`
+- Comportamiento:
+  - Valida consentimiento expreso antes de handoff.
+  - Reenvia payload JSON a API externa IACloser (si esta configurada por env vars).
+  - Registra trazabilidad en Firestore (`lead_handoffs`) y agrega lead en `leads` con `source: "lead_chat_iacloser"`.
+- Respuestas:
+  - `200`: `{ success: true, handoffId: string, redirectUrl: string | null, queuedCallInSeconds: 60 }`
+  - `400`: `{ error: "widgetId is required" | "name is required" | "phone is required" | "Explicit consent is required" | "IACLOSER_API_URL is not configured" }`
+  - `404`: `{ error: "Widget not found" }`
+  - `502`: `{ error: "IACloser handoff failed", details?: object }`
+  - `500`: `{ error: "Failed to send handoff" }`
+
 #### `POST /api/users/bootstrap`
 
 - Headers:
@@ -216,6 +234,7 @@ Base detectada:
 - Busqueda:
   - primero `widget_configs.widget_id == identity`
   - fallback `widget_configs.user_id == identity`
+  - fallback `widget_configs.lead_chat_slug == identity`
 - Respuestas:
   - `200`: `{ config: PublicWidgetConfig }`
   - `400`: `{ error: "Missing widget identity" }`
@@ -227,6 +246,9 @@ Base detectada:
   - `triggerDelay`, `exitIntentEnabled`, `exitIntentTitle`, `exitIntentDescription`, `exitIntentCta`
   - `teaserMessages`, `quickReplies`, `testimonials`
   - `launcherIcon`, `hideBranding`, `brandingText`, `brandingLink`
+  - `experienceMode`, `leadChatSlug`, `leadChatUrl`
+  - `consentText`, `consentTextVersion`, `iacloserRedirectUrl`, `iacloserEnabled`
+  - `leadChatHeadline`, `leadChatSubheadline`, `leadChatOfferTitle`, `leadChatOfferDescription`, `leadChatCtaLabel`, `leadChatLiveToasts`
   - `ai_enabled`, `ai_provider`, `ai_api_key`, `ai_model`, `ai_system_prompt`, `business_description`, `ai_temperature`, `ai_max_tokens`
   - `facebookPixelId`, `tiktokPixelId`, `googleTagId`, `customTrackingCode: ""`, `updatedAt`
 
@@ -281,6 +303,7 @@ Comportamientos actuales que clientes ya consumen:
 - `POST /api/chat` devuelve mayormente `200` con campo `response` incluso para varios casos de error de negocio.
 - `GET /api/widget-config/:identity` soporta lookup por `widget_id` y fallback por `user_id`.
 - `GET /api/w/:widgetId.js` mantiene entrega de script autocontenido y globals `window.LEADWIDGET_CLIENT_ID`, `window.LEADWIDGET_WIDGET_ID`, `window.LEADWIDGET_CONFIG`.
+- Si `experience_mode=lead_chat`, `GET /api/w/:widgetId.js` responde script no embebible (warning) y se prioriza `leadChatUrl` publico.
 - Tracking declarativo se mantiene en `facebook_pixel_id`, `tiktok_pixel_id`, `google_tag_id`; `custom_tracking_code/custom_code` no se exponen.
 - `POST /api/verify-payment` es idempotente por `orderID` (`paypal_order_id`).
 - CORS acepta `GET,POST,OPTIONS` y header `Authorization`.
@@ -357,3 +380,7 @@ Cambios de comportamiento relevantes:
 - Cambio: branding partner simplificado a `branding_text` + `branding_link` en `PUT /api/partners/branding` (con aliases legacy)
 - Tipo: non-breaking
 - Impacto: estandariza la configuracion de texto/enlace usados como fallback en widgets PLUS de clientes atribuidos
+- Fecha: 2026-02-19
+- Cambio: agregado flujo Lead Chat + IACloser con `POST /api/icloser/handoff`, lookup por `lead_chat_slug` y campos publicos (`experience_mode`, `lead_chat_slug`, consentimiento, redirect IACloser)
+- Tipo: non-breaking
+- Impacto: mantiene rutas legacy de widget embebido; habilita modo pagina publica para captacion y handoff con consentimiento expreso
