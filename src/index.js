@@ -255,6 +255,8 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partner
   const experienceMode = experienceModeRaw === "lead_chat" ? "lead_chat" : "widget";
   const leadChatHeadline = cleanText(widgetData?.lead_chat_headline || "");
   const leadChatSubheadline = cleanText(widgetData?.lead_chat_subheadline || "");
+  const leadChatEyebrow = cleanText(widgetData?.lead_chat_eyebrow || "");
+  const leadChatBadgeText = cleanText(widgetData?.lead_chat_badge_text || "");
   const leadChatOfferTitle = cleanText(widgetData?.lead_chat_offer_title || "");
   const leadChatOfferDescription = cleanText(widgetData?.lead_chat_offer_description || "");
   const leadChatCtaLabel = cleanText(widgetData?.lead_chat_cta_label || "");
@@ -348,6 +350,8 @@ function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partner
     iacloserEnabled: Boolean(iacloserRedirectUrl || cleanText(process.env.IACLOSER_API_URL || "")),
     leadChatHeadline,
     leadChatSubheadline,
+    leadChatEyebrow,
+    leadChatBadgeText,
     leadChatOfferTitle,
     leadChatOfferDescription,
     leadChatCtaLabel,

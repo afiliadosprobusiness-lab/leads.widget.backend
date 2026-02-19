@@ -114,4 +114,4 @@ Actualizacion de objetivo (2026-02-19):
   - `consent.accepted_at` (ISO datetime)
   - `consent.text_version` (version legal mostrada)
 - Regla obligatoria: sin consentimiento expreso no se envia handoff a IACloser ni se activa llamada.
-- El backend expone en `PublicWidgetConfig` ajustes visuales/comerciales de Lead Chat (headline/subheadline, popup de oferta, CTA y mensajes live toast) para que el frontend los renderice desde dashboard.
+- El backend expone en `PublicWidgetConfig` ajustes visuales/comerciales de Lead Chat (eyebrow/badge superior, headline/subheadline, popup de oferta, CTA y mensajes live toast) para que el frontend los renderice desde dashboard.
