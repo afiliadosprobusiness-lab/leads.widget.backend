@@ -1,5 +1,6 @@
 ﻿import express from "express";
 import OpenAI from "openai";
+import crypto from "node:crypto";
 import { getFirebaseAdmin, getFirestore } from "./firebase.js";
 
 const app = express();
@@ -58,6 +59,76 @@ function clientIpFrom(req) {
     return forwarded.split(",")[0].trim();
   }
   return req.ip || req.socket.remoteAddress || "unknown";
+}
+
+function normalizeIpForSignupLimit(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  let normalized = raw;
+  if (normalized.startsWith("::ffff:")) normalized = normalized.slice(7);
+
+  const zoneIndex = normalized.indexOf("%");
+  if (zoneIndex >= 0) normalized = normalized.slice(0, zoneIndex);
+
+  if (normalized.includes(".") && normalized.includes(":")) {
+    const parts = normalized.split(":");
+    const maybePort = parts[parts.length - 1] || "";
+    if (/^\d{1,5}$/.test(maybePort)) {
+      normalized = parts.slice(0, -1).join(":");
+    }
+  }
+
+  return normalized.trim();
+}
+
+function hashSignupIp(normalizedIp) {
+  return crypto.createHash("sha256").update(normalizedIp).digest("hex");
+}
+
+async function acquireSignupIpLock({ uid, clientIp, nowIso }) {
+  const normalizedIp = normalizeIpForSignupLimit(clientIp);
+  if (!normalizedIp || normalizedIp === "unknown") {
+    return { lockRef: null, lockCreated: false, ipHash: null };
+  }
+
+  const ipHash = hashSignupIp(normalizedIp);
+  const lockRef = firestore.collection("signup_ip_locks").doc(ipHash);
+  let lockCreated = false;
+
+  await firestore.runTransaction(async (tx) => {
+    const lockSnap = await tx.get(lockRef);
+    if (lockSnap.exists) {
+      const lockData = lockSnap.data() || {};
+      const ownerUid = String(lockData.uid || "").trim();
+      if (ownerUid && ownerUid !== uid) {
+        const ownerProfileSnap = await tx.get(firestore.collection("profiles").doc(ownerUid));
+        if (ownerProfileSnap.exists) {
+          const error = new Error("Only one account per IP is allowed");
+          error.code = "IP_SIGNUP_LIMIT_REACHED";
+          error.httpStatus = 429;
+          throw error;
+        }
+      }
+
+      tx.set(lockRef, {
+        uid,
+        ip_hash: ipHash,
+        last_seen_at: nowIso,
+      }, { merge: true });
+      return;
+    }
+
+    lockCreated = true;
+    tx.set(lockRef, {
+      uid,
+      ip_hash: ipHash,
+      created_at: nowIso,
+      last_seen_at: nowIso,
+    });
+  });
+
+  return { lockRef, lockCreated, ipHash };
 }
 
 function toDateKey(date) {
@@ -263,6 +334,21 @@ async function getWidgetConfigByIdentity(widgetId) {
 
   const doc = q.docs[0];
   return { id: doc.id, ...doc.data() };
+}
+
+function buildWidgetSecurityScopeIds(widgetIdentity, widgetData) {
+  const raw = [widgetIdentity, widgetData?.id, widgetData?.widget_id];
+  return Array.from(
+    new Set(
+      raw
+        .map((value) => cleanText(value || ""))
+        .filter(Boolean),
+    ),
+  ).slice(0, 10);
+}
+
+function resolvePrimaryWidgetSecurityId(widgetIdentity, widgetData) {
+  return cleanText(widgetData?.id || "") || cleanText(widgetIdentity || "");
 }
 
 function mapWidgetToPublicConfig(widgetData, profileData = {}, identity, partnerData = {}) {
@@ -825,13 +911,30 @@ app.post("/api/track", async (req, res) => {
   const now = new Date();
 
   try {
+    let blockedScopeIds = [cleanText(widgetId || "")].filter(Boolean);
     try {
-      const blocked = await firestore
-        .collection("blocked_ips")
-        .where("ip_address", "==", clientIp)
-        .where("widget_id", "==", widgetId)
-        .limit(1)
-        .get();
+      if (widgetId !== "demo-landing") {
+        const widgetData = await getWidgetConfigByIdentity(widgetId);
+        blockedScopeIds = buildWidgetSecurityScopeIds(widgetId, widgetData);
+      }
+    } catch (error) {
+      console.error("track widget scope resolve error", error?.message || error);
+    }
+
+    try {
+      const blocked = blockedScopeIds.length <= 1
+        ? await firestore
+          .collection("blocked_ips")
+          .where("ip_address", "==", clientIp)
+          .where("widget_id", "==", blockedScopeIds[0] || cleanText(widgetId || ""))
+          .limit(1)
+          .get()
+        : await firestore
+          .collection("blocked_ips")
+          .where("ip_address", "==", clientIp)
+          .where("widget_id", "in", blockedScopeIds)
+          .limit(1)
+          .get();
 
       if (!blocked.empty) {
         return res.status(200).json({ success: true, blocked: true });
@@ -880,6 +983,10 @@ app.post("/api/chat", async (req, res) => {
   }
 
   const clientIp = clientIpFrom(req);
+  let widgetData = null;
+  let profileData = {};
+  let blockedScopeIds = [cleanText(widgetId || "")].filter(Boolean);
+  let primaryBlockedWidgetId = cleanText(widgetId || "");
 
   const forbiddenPatterns = [
     /jailbreak/i,
@@ -892,31 +999,59 @@ app.post("/api/chat", async (req, res) => {
     /modo desarrollador/i,
   ];
 
-  if (forbiddenPatterns.some((pattern) => pattern.test(message))) {
-    try {
-      await firestore.collection("blocked_ips").add({
-        widget_id: widgetId,
-        ip_address: clientIp,
-        reason: "Static filter: Potential jailbreak detected",
-        created_at: new Date().toISOString(),
-      });
-    } catch {
-      // ignore
+  try {
+    if (widgetId !== "demo-landing") {
+      widgetData = await getWidgetConfigByIdentity(widgetId);
+      if (!widgetData) {
+        return res.status(404).json({ error: "Widget not found" });
+      }
+      const profileDoc = await firestore.collection("profiles").doc(widgetData.user_id).get();
+      profileData = profileDoc.exists ? profileDoc.data() : {};
+    } else {
+      profileData = {
+        ai_enabled: true,
+        ai_model: "gpt-4o-mini",
+      };
     }
 
-    return res.status(403).json({
-      response: "Your behavior was identified as malicious. Access restricted.",
-      blocked: true,
-    });
-  }
+    blockedScopeIds = buildWidgetSecurityScopeIds(widgetId, widgetData);
+    primaryBlockedWidgetId = resolvePrimaryWidgetSecurityId(widgetId, widgetData);
 
-  try {
+    if (forbiddenPatterns.some((pattern) => pattern.test(message))) {
+      try {
+        await firestore.collection("blocked_ips").add({
+          widget_id: primaryBlockedWidgetId,
+          ip_address: clientIp,
+          reason: "Static filter: Potential jailbreak detected",
+          created_at: new Date().toISOString(),
+        });
+      } catch {
+        // ignore
+      }
+
+      return res.status(403).json({
+        response: "Your behavior was identified as malicious. Access restricted.",
+        blocked: true,
+      });
+    }
+
     try {
-      const blockedQuery = await firestore
-        .collection("blocked_ips")
-        .where("ip_address", "==", clientIp)
-        .limit(1)
-        .get();
+      let blockedQuery = null;
+      if (blockedScopeIds.length <= 1) {
+        blockedQuery = await firestore
+          .collection("blocked_ips")
+          .where("ip_address", "==", clientIp)
+          .where("widget_id", "==", blockedScopeIds[0] || primaryBlockedWidgetId)
+          .limit(1)
+          .get();
+      } else {
+        blockedQuery = await firestore
+          .collection("blocked_ips")
+          .where("ip_address", "==", clientIp)
+          .where("widget_id", "in", blockedScopeIds)
+          .limit(1)
+          .get();
+      }
       if (!blockedQuery.empty) {
         return res.status(403).json({
           response: "Your access to this chat has been restricted for security.",
@@ -955,18 +1090,7 @@ app.post("/api/chat", async (req, res) => {
       created_at: new Date().toISOString(),
     }).catch(() => {});
 
-    let widgetData = null;
-    let profileData = {};
-
     if (widgetId !== "demo-landing") {
-      widgetData = await getWidgetConfigByIdentity(widgetId);
-      if (!widgetData) {
-        return res.status(404).json({ error: "Widget not found" });
-      }
-
-      const profileDoc = await firestore.collection("profiles").doc(widgetData.user_id).get();
-      profileData = profileDoc.exists ? profileDoc.data() : {};
-
       const subStatus = profileData?.subscription_status || "trial";
       const trialEnds = profileData?.trial_ends_at ? new Date(profileData.trial_ends_at) : null;
       const now = new Date();
@@ -981,11 +1105,6 @@ app.post("/api/chat", async (req, res) => {
           : "SERVICIO PAUSADO: Tu periodo de prueba ha finalizado. Realiza el pago en tu panel para reactivar el chat.";
         return res.status(200).json({ response: msg });
       }
-    } else {
-      profileData = {
-        ai_enabled: true,
-        ai_model: "gpt-4o-mini",
-      };
     }
 
     const lang = widgetData?.language || "es";
@@ -1076,7 +1195,7 @@ app.post("/api/chat", async (req, res) => {
     if (shouldBlock) {
       try {
         await firestore.collection("blocked_ips").add({
-          widget_id: widgetData?.id || widgetId,
+          widget_id: primaryBlockedWidgetId,
           ip_address: clientIp,
           reason: "AI/System detected safety violation",
           ai_raw_response: aiResponse.slice(0, 120),
@@ -1336,6 +1455,9 @@ app.post("/api/users/bootstrap", async (req, res) => {
   const partnerNameRaw = (req.body?.partnerName || businessName || decoded.name || "").toString().trim();
   const inviteCodeRaw = (req.body?.inviteCode || "").toString().trim();
   const now = new Date().toISOString();
+  let ipLockRef = null;
+  let ipLockCreated = false;
+  let profileCreated = false;
 
   try {
     const profileRef = firestore.collection("profiles").doc(uid);
@@ -1397,6 +1519,14 @@ app.post("/api/users/bootstrap", async (req, res) => {
     }
 
     if (!profileSnap.exists) {
+      const ipLock = await acquireSignupIpLock({
+        uid,
+        clientIp: clientIpFrom(req),
+        nowIso: now,
+      });
+      ipLockRef = ipLock.lockRef;
+      ipLockCreated = ipLock.lockCreated;
+
       created = true;
       const profileData = {
         email: decoded.email || null,
@@ -1472,6 +1602,7 @@ app.post("/api/users/bootstrap", async (req, res) => {
       }
 
       await profileRef.set(profileData);
+      profileCreated = true;
     } else {
       const updates = { updated_at: now };
       if (businessName) updates.business_name = businessName;
@@ -1606,6 +1737,18 @@ app.post("/api/users/bootstrap", async (req, res) => {
       partner_code: partnerCode || null,
     });
   } catch (error) {
+    if (error?.code === "IP_SIGNUP_LIMIT_REACHED" || error?.httpStatus === 429) {
+      return res.status(429).json({ error: "Only one account per IP is allowed" });
+    }
+
+    if (ipLockCreated && !profileCreated && ipLockRef) {
+      try {
+        await ipLockRef.delete();
+      } catch (cleanupError) {
+        console.error("bootstrap ip lock cleanup error", cleanupError);
+      }
+    }
+
     console.error("bootstrap user error", error);
     return res.status(500).json({ error: "Failed to bootstrap user profile" });
   }

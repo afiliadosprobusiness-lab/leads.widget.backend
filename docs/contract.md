@@ -112,6 +112,14 @@ Campos observados:
 - `source`
 - `timestamp`
 
+### `signup_ip_locks`
+
+- doc id: `sha256(ip_normalizada)`
+- `uid`
+- `ip_hash`
+- `created_at`
+- `last_seen_at`
+
 ## Endpoints del backend
 
 Base detectada:
@@ -136,6 +144,8 @@ Base detectada:
   - `200`: `{ success: true, cached: true }` (de-dup en 5s para `view`)
   - `400`: `{ error: "widgetId is required" }`
   - `500`: `{ error: "Internal server error" }`
+- Seguridad de bloqueo observada:
+  - La validacion de IP bloqueada en tracking se hace por alcance de widget (`ip_address` + `widget_id`) con compatibilidad de IDs legacy/actuales.
 
 #### `POST /api/chat`
 
@@ -150,6 +160,9 @@ Base detectada:
   - `403`: `{ response: "<texto>", blocked: true }` (filtros/blocked IP)
   - `404`: `{ error: "Widget not found" }`
   - `429`: `{ response: "<texto>", rateLimited: true }`
+- Seguridad de bloqueo observada:
+  - La verificacion de IP bloqueada se hace por alcance de widget (IP + `widget_id`), evitando bloqueo global entre widgets distintos.
+  - Para compatibilidad, la busqueda considera identificadores legacy y actuales del widget (`doc id`, `widget_id`, alias de identidad).
 
 #### `POST /api/icloser/handoff`
 
@@ -176,9 +189,14 @@ Base detectada:
 - Body JSON:
   - `businessName` (opcional)
   - `referredBy` (opcional)
+- Comportamiento:
+  - Si el `uid` aun no tiene perfil, aplica lock transaccional por IP (`signup_ip_locks`).
+  - Solo se permite crear una cuenta nueva por IP; el mismo `uid` puede reintentar bootstrap desde su IP.
+  - Si el lock apunta a un `uid` sin perfil activo (lock huerfano), el backend reasigna el lock al nuevo `uid`.
 - Respuestas:
   - `200`: `{ success: true, role: "client" | "superadmin", created: boolean }`
   - `401`: `{ error: "Unauthorized" }`
+  - `429`: `{ error: "Only one account per IP is allowed" }`
   - `500`: `{ error: "Failed to bootstrap user profile" }`
 
 #### `GET /api/affiliates/network`
@@ -393,3 +411,11 @@ Cambios de comportamiento relevantes:
 - Cambio: `POST /api/icloser/handoff` exige consentimiento afirmativo explicito (`consent.explicitResponse = "SI"/"YES"`) ademas de `consent.accepted=true`
 - Tipo: non-breaking
 - Impacto: refuerza cumplimiento legal del flujo Lead Chat antes del handoff a IACloser
+- Fecha: 2026-02-19
+- Cambio: `POST /api/users/bootstrap` agrega lock por IP para limitar creacion de cuentas nuevas a una por IP (`signup_ip_locks`)
+- Tipo: non-breaking
+- Impacto: reduce creacion masiva automatizada de cuentas; respuestas de bootstrap ahora pueden incluir `429` por limite de IP
+- Fecha: 2026-02-22
+- Cambio: `POST /api/chat` y `POST /api/track` acotan bloqueo de IP por widget (`ip_address` + `widget_id`) y el chat normaliza persistencia de bloqueos al `doc id` del widget cuando esta disponible, manteniendo compatibilidad con IDs legacy.
+- Tipo: non-breaking
+- Impacto: evita bloqueos cruzados entre clientes y mejora consistencia del modulo de seguridad del dashboard sin cambiar el shape de respuesta.
