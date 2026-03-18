@@ -8,6 +8,11 @@ Actualizacion de objetivo (2026-02-19):
 - Handoff primario: envio de contexto de lead a API de IACloser + redireccion del usuario a landing/pagina IACloser.
 - Lead Chat opera como pagina publica compartible (sin requerir instalacion embebida en web del cliente).
 
+Actualizacion de objetivo (2026-03-18):
+- Activar backend v1 para la pestana `Adquisicion` del dashboard.
+- Buscar prospects desde Google Places API, persistirlos por tenant y permitir aprobar/descartar desde backend.
+- Al aprobar un prospect, crear o mergear un contacto en `crm_contacts` con `source = acquisition_google_places`.
+
 ## Tech Stack
 - Runtime: Node.js >= 20
 - Framework: Express
@@ -18,6 +23,12 @@ Actualizacion de objetivo (2026-02-19):
 ## Arquitectura (decisiones clave)
 - Servicio stateless con Firestore como persistencia.
 - Compatibilidad backward de rutas existentes (`/api/chat`, `/api/track`, `/api/w/:widgetId.js`, `/api/widget-config/:identity`).
+- Modulo `Acquisition` server-side:
+  - Endpoints autenticados via Bearer Firebase igual que el resto del dashboard.
+  - Persistencia en `acquisition_prospects`, scopeada por `client_id`.
+  - Dedupe fuerte por `client_id + external_id` usando doc id deterministico.
+  - Respuesta publica mapeada a camelCase para no romper la UI actual de `leads.widget`.
+  - Aprobacion crea o mergea contacto en `crm_contacts` sin crear deals ni tasks automaticas.
 - White-label reforzado server-side:
   - Plan `pro` (30): no puede ocultar marca.
   - Plan `plus` (60): permite `hide_branding`, `branding_text` y `branding_link` custom.
@@ -58,7 +69,16 @@ Actualizacion de objetivo (2026-02-19):
 - `partner_payouts`
 - `audit_events`
 
+### Colecciones nuevas (Adquisicion)
+- `acquisition_prospects`
+  - Campos persistidos: `id`, `client_id`, `external_id`, `business_name`, `category`, `city`, `country`, `address`, `phone`, `website`, `rating`, `reviews_count`, `commercial_score`, `maps_url`, `status`, `source`, `crm_contact_id`, `created_at`, `updated_at`
+  - Estados permitidos: `pending`, `approved`, `discarded`
+
 ### Endpoints nuevos
+- Adquisicion:
+  - `POST /api/acquisition/search`
+  - `GET /api/acquisition/prospects`
+  - `PATCH /api/acquisition/prospects`
 - Partner:
   - `GET /api/partners/me`
   - `GET /api/partners/overview`
@@ -101,6 +121,7 @@ Actualizacion de objetivo (2026-02-19):
 ## Variables de entorno
 - `FIREBASE_SERVICE_ACCOUNT`
 - `OPENAI_API_KEY`
+- `GOOGLE_MAPS_API_KEY` (Places API / Maps API para Acquisition)
 - `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENV`
 - `CORS_ORIGINS`, `PUBLIC_APP_URL`, `WIDGET_EMBED_URL`
 - `ALLOW_INSECURE_VERIFY_PAYMENT` (default seguro recomendado: `false`)

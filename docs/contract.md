@@ -90,6 +90,35 @@ Se escriben desde dos flujos (schema heterogeneo):
 - Flujo widget embebido via Firestore REST:
   - `client_id`, `name`, `phone`, `interest`, `source`, `status`, `created_at` (timestamp)
 
+### `acquisition_prospects`
+
+Coleccion nueva para la pestana `Adquisicion`, scopeada por tenant:
+
+- `id` (doc id deterministico)
+- `client_id`
+- `external_id`
+- `business_name`
+- `category`
+- `city`
+- `country`
+- `address`
+- `phone`
+- `website`
+- `rating`
+- `reviews_count`
+- `commercial_score`
+- `maps_url`
+- `status` (`pending` | `approved` | `discarded`)
+- `source` (`google_places`)
+- `crm_contact_id`
+- `created_at`
+- `updated_at`
+
+Regla observada:
+
+- dedupe obligatorio por `client_id + external_id`
+- respuesta HTTP mapea estos campos al shape camelCase esperado por la UI (`businessName`, `reviewsCount`, `commercialScore`, `mapsUrl`)
+
 ### `payments`
 
 Campos observados:
@@ -246,6 +275,84 @@ Base detectada:
   - `401`: `{ error: "Unauthorized. Missing valid Firebase token." }`
   - `500`: `{ error: "<paypal/backend error>" }`
 
+#### `POST /api/acquisition/search`
+
+- Headers:
+  - `Authorization: Bearer <Firebase ID token>` (requerido)
+- Body JSON:
+  - Requerido: `category`, `city`
+  - Opcional: `country`, `minScore`
+- Comportamiento:
+  - valida Bearer token Firebase y usa `decoded.uid` como `client_id`
+  - consulta Google Places API (Text Search New)
+  - calcula `commercial_score` server-side
+  - persiste/actualiza en `acquisition_prospects` con dedupe por `client_id + external_id`
+  - conserva `status` y `crm_contact_id` si el prospect ya existia
+- Respuestas:
+  - `200`: `{ prospects: AcquisitionProspectResponse[] }`
+  - `400`: `{ error: "category is required" | "city is required" | "minScore must be a number between 0 and 100" }`
+  - `401`: `{ error: "Unauthorized" }`
+  - `500`: `{ error: "Acquisition search is not configured" }`
+  - `502`: `{ error: "Unable to search acquisition prospects right now" }`
+
+#### `GET /api/acquisition/prospects`
+
+- Headers:
+  - `Authorization: Bearer <Firebase ID token>` (requerido)
+- Query params opcionales:
+  - `status`
+  - `city`
+  - `country`
+  - `category`
+  - `minScore`
+- Respuestas:
+  - `200`: `{ prospects: AcquisitionProspectResponse[] }`
+  - `400`: `{ error: "status must be pending, approved or discarded" | "minScore must be a number between 0 and 100" }`
+  - `401`: `{ error: "Unauthorized" }`
+  - `500`: `{ error: "Failed to load acquisition prospects" }`
+
+#### `PATCH /api/acquisition/prospects`
+
+- Headers:
+  - `Authorization: Bearer <Firebase ID token>` (requerido)
+- Body JSON:
+  - Requerido: `id`, `status`
+- Restricciones:
+  - `status` solo acepta `approved` o `discarded`
+  - ids fuera del tenant autenticado responden como `404`
+  - un prospect ya `approved` no puede pasar a `discarded`
+- Comportamiento:
+  - `discarded`: solo actualiza estado
+  - `approved`: crea o mergea contacto en `crm_contacts`
+    - `name = business_name`
+    - `interest = category + " - " + city`
+    - `stage = "new"` para contactos nuevos; contactos ya existentes preservan su etapa actual
+    - `source = "acquisition_google_places"`
+    - `notes` agrega rating, reviews, telefono, website y maps url
+- Respuestas:
+  - `200`: `{ success: true, prospect: AcquisitionProspectResponse, crmContactId?: string | null, crm_contact_id?: string | null, action: "created" | "merged" | "noop" }`
+  - `400`: `{ error: "id is required" | "status must be approved or discarded" | "Approved prospects cannot be discarded" }`
+  - `401`: `{ error: "Unauthorized" }`
+  - `404`: `{ error: "Prospect not found" }`
+  - `500`: `{ error: "Failed to update acquisition prospect" }`
+
+`AcquisitionProspectResponse` observado:
+
+- `id`
+- `businessName`
+- `category`
+- `city`
+- `country`
+- `address`
+- `phone`
+- `website`
+- `rating`
+- `reviewsCount`
+- `commercialScore`
+- `mapsUrl`
+- `status`
+- `source`
+
 #### `GET /api/widget-config/:identity`
 
 - Path param:
@@ -283,7 +390,7 @@ Base detectada:
 
 ### CORS y preflight (backend externo)
 
-- `Access-Control-Allow-Methods: GET,POST,OPTIONS`
+- `Access-Control-Allow-Methods: GET,POST,PATCH,PUT,OPTIONS`
 - `Access-Control-Allow-Headers: Content-Type,Authorization`
 - `OPTIONS` responde `200` y corta flujo.
 
@@ -375,6 +482,14 @@ Cambios de comportamiento relevantes:
 - `PUT /api/partners/branding` acepta `branding_text` y `branding_link` (manteniendo compatibilidad con `agency_name`/`cta_url`).
 
 ### Changelog del Contrato
+- Fecha: 2026-03-18
+- Cambio: agregado backend `Acquisition` con `POST /api/acquisition/search`, `GET /api/acquisition/prospects`, `PATCH /api/acquisition/prospects`, persistencia en `acquisition_prospects` e integracion con `crm_contacts`
+- Tipo: non-breaking
+- Impacto: la UI existente de `Adquisicion` puede migrar de mock local a datos persistidos sin cambiar su shape visual
+- Fecha: 2026-03-18
+- Cambio: CORS del backend externo amplia metodos permitidos a `PATCH` y `PUT`
+- Tipo: non-breaking
+- Impacto: habilita actualizaciones autenticadas desde dashboard para modulos server-side como Acquisition y branding partner
 - Fecha: 2026-02-16
 - Cambio: agregado modulo Partner Program, endpoints partner/admin y reglas de comision/branding server-side
 - Tipo: non-breaking

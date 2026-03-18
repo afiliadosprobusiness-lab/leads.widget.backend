@@ -23,6 +23,27 @@ const PLAN_BASE_AMOUNT_PEN = Object.freeze({
   plus: 60,
 });
 const DEFAULT_IACLOSER_API_URL = "https://ai-call-closer-saas.vercel.app/api/leads/handoff";
+const ACQUISITION_STATUSES = new Set(["pending", "approved", "discarded"]);
+const ACQUISITION_OPERATION_STATUSES = new Set(["approved", "discarded"]);
+const CRM_STAGES = new Set(["new", "contacted", "qualified", "won", "lost"]);
+const ACQUISITION_SOURCE = "google_places";
+const ACQUISITION_CRM_SOURCE = "acquisition_google_places";
+const ACQUISITION_GOOGLE_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
+const ACQUISITION_GOOGLE_FIELD_MASK = [
+  "places.id",
+  "places.displayName",
+  "places.formattedAddress",
+  "places.addressComponents",
+  "places.internationalPhoneNumber",
+  "places.nationalPhoneNumber",
+  "places.websiteUri",
+  "places.rating",
+  "places.userRatingCount",
+  "places.googleMapsUri",
+  "places.primaryType",
+  "places.primaryTypeDisplayName",
+  "places.types",
+].join(",");
 
 const corsOrigins = (process.env.CORS_ORIGINS || "*")
   .split(",")
@@ -41,7 +62,7 @@ function corsFor(req, res) {
     res.setHeader("Vary", "Origin");
   }
 
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
 }
 
@@ -229,6 +250,474 @@ function sanitizePhoneNumber(value) {
   const digits = raw.replace(/\D/g, "");
   if (digits.length < 8 || digits.length > 15) return "";
   return digits;
+}
+
+function trimToMaxLength(value, maxLength = 400) {
+  const normalized = cleanText(value);
+  if (!normalized) return "";
+  return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+}
+
+function normalizeComparableText(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function clampNumber(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.min(Math.max(numeric, min), max);
+}
+
+function parseOptionalMinScore(value) {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return null;
+  return Math.round(parsed);
+}
+
+function normalizeAcquisitionStatus(value, fallback = "pending") {
+  const normalized = cleanText(value).toLowerCase();
+  return ACQUISITION_STATUSES.has(normalized) ? normalized : fallback;
+}
+
+function getGoogleMapsApiKey() {
+  return cleanText(process.env.GOOGLE_MAPS_API_KEY || "");
+}
+
+function buildAcquisitionProspectDocId(clientId, externalId) {
+  const raw = `${cleanText(clientId)}|${cleanText(externalId)}`;
+  const hash = crypto.createHash("sha1").update(raw).digest("hex");
+  return `acq_${hash}`;
+}
+
+function buildAcquisitionTextQuery({ category, city, country }) {
+  const base = [cleanText(category), cleanText(city), cleanText(country)].filter(Boolean).join(", ");
+  return base.includes(",") ? base : [cleanText(category), "in", cleanText(city), cleanText(country)].filter(Boolean).join(" ");
+}
+
+function buildFallbackMapsUrl({ businessName, address, city, country }) {
+  const query = [businessName, address, city, country].filter(Boolean).join(" ");
+  if (!query) return "";
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+function extractPlaceAddressComponent(place = {}, acceptedTypes = []) {
+  if (!Array.isArray(place.addressComponents)) return "";
+  for (const component of place.addressComponents) {
+    const componentTypes = Array.isArray(component?.types) ? component.types : [];
+    if (acceptedTypes.some((type) => componentTypes.includes(type))) {
+      return trimToMaxLength(component.longText || component.shortText || "", 180);
+    }
+  }
+  return "";
+}
+
+function sanitizeReadablePhone(value) {
+  const raw = trimToMaxLength(value, 60);
+  if (!raw) return "";
+  const digits = raw.replace(/[^\d]/g, "");
+  if (digits.length < 8 || digits.length > 18) return "";
+  return raw;
+}
+
+function normalizeAcquisitionCategory(place = {}, fallbackCategory = "") {
+  return trimToMaxLength(
+    place?.primaryTypeDisplayName?.text
+      || place?.primaryType
+      || fallbackCategory,
+    160,
+  );
+}
+
+function hasCommercialCategorySignal(category, placeTypes = []) {
+  const normalizedCategory = normalizeComparableText(category);
+  const normalizedTypes = Array.isArray(placeTypes)
+    ? placeTypes.map((item) => normalizeComparableText(item))
+    : [];
+  const signals = [
+    "dent", "clinic", "spa", "esthetic", "law", "legal", "real_estate",
+    "inmobili", "car_repair", "auto", "restaurant", "doctor", "medic",
+    "salon", "gym", "agency", "marketing", "account", "hotel",
+  ];
+  return signals.some((signal) =>
+    normalizedCategory.includes(signal) || normalizedTypes.some((type) => type.includes(signal)));
+}
+
+function calculateCommercialScore({
+  rating,
+  reviewsCount,
+  phone,
+  website,
+  category,
+  placeTypes = [],
+}) {
+  const safeRating = clampNumber(rating, 0, 5);
+  const safeReviews = Math.max(0, Math.round(Number.isFinite(Number(reviewsCount)) ? Number(reviewsCount) : 0));
+  const ratingScore = Math.round((safeRating / 5) * 35);
+  const reviewsScore = Math.min(25, Math.round(Math.log10(safeReviews + 1) * 10));
+  const phoneScore = phone ? 15 : 0;
+  const websiteScore = website ? 15 : 0;
+  const categoryScore = hasCommercialCategorySignal(category, placeTypes) ? 10 : (category ? 5 : 0);
+  return clampNumber(ratingScore + reviewsScore + phoneScore + websiteScore + categoryScore, 0, 100);
+}
+
+function buildAcquisitionProspectNotes(prospect) {
+  return [
+    "Origen: Adquisicion",
+    `Rating: ${safeNumber(prospect.rating, 0)}/5`,
+    `Resenas: ${Math.max(0, Math.round(safeNumber(prospect.reviews_count, 0)))}`,
+    `Telefono: ${prospect.phone || "-"}`,
+    `Website: ${prospect.website || "-"}`,
+    `Google Maps: ${prospect.maps_url || "-"}`,
+  ].join("\n");
+}
+
+function normalizePhoneForCrmDedupe(value) {
+  const raw = cleanText(value);
+  if (!raw) return "";
+  const hasPlus = raw.startsWith("+");
+  const digits = raw.replace(/[^\d]/g, "");
+  if (!digits) return "";
+  return hasPlus ? `+${digits}` : digits;
+}
+
+function normalizeEmailForCrmDedupe(value) {
+  return cleanText(value).toLowerCase();
+}
+
+function mergeCrmContactDataForAcquisition(base = {}, incoming = {}) {
+  const baseName = trimToMaxLength(base.name || "", 180);
+  const incomingName = trimToMaxLength(incoming.name || "", 180);
+  const basePhone = trimToMaxLength(base.phone || "", 60);
+  const incomingPhone = trimToMaxLength(incoming.phone || "", 60);
+  const baseEmail = normalizeEmailForCrmDedupe(base.email || "");
+  const incomingEmail = normalizeEmailForCrmDedupe(incoming.email || "");
+  const baseInterest = trimToMaxLength(base.interest || "", 300);
+  const incomingInterest = trimToMaxLength(incoming.interest || "", 300);
+  const baseLeadId = trimToMaxLength(base.source_lead_id || "", 140);
+  const incomingLeadId = trimToMaxLength(incoming.source_lead_id || "", 140);
+  const baseNotes = trimToMaxLength(base.notes || "", 1600);
+  const incomingNotes = trimToMaxLength(incoming.notes || "", 1600);
+  const baseStage = CRM_STAGES.has(String(base.stage || "").trim().toLowerCase())
+    ? String(base.stage || "").trim().toLowerCase()
+    : "new";
+  const nowIso = new Date().toISOString();
+
+  let notes = baseNotes || incomingNotes;
+  if (baseNotes && incomingNotes && baseNotes !== incomingNotes) {
+    notes = `${baseNotes}\n${incomingNotes}`.slice(0, 1600);
+  }
+
+  return {
+    client_id: trimToMaxLength(base.client_id || incoming.client_id || "", 140),
+    name: baseName || incomingName || "Sin nombre",
+    phone: basePhone || incomingPhone,
+    email: baseEmail || incomingEmail,
+    interest: incomingInterest || baseInterest,
+    stage: baseStage,
+    source: ACQUISITION_CRM_SOURCE,
+    source_lead_id: baseLeadId || incomingLeadId,
+    notes,
+    created_at: base.created_at || incoming.created_at || nowIso,
+    updated_at: nowIso,
+    last_activity_at: nowIso,
+    dedupe_phone: normalizePhoneForCrmDedupe(basePhone || incomingPhone),
+    dedupe_email: normalizeEmailForCrmDedupe(baseEmail || incomingEmail),
+  };
+}
+
+function buildCrmContactFromAcquisitionProspect(prospect, clientId) {
+  const nowIso = new Date().toISOString();
+  const name = trimToMaxLength(prospect.business_name || "", 180) || "Sin nombre";
+  const phone = trimToMaxLength(prospect.phone || "", 60);
+  const email = "";
+  const interest = trimToMaxLength(
+    [prospect.category, prospect.city].filter(Boolean).join(" - "),
+    300,
+  );
+
+  return {
+    client_id: trimToMaxLength(clientId, 140),
+    name,
+    phone,
+    email,
+    interest,
+    stage: "new",
+    source: ACQUISITION_CRM_SOURCE,
+    source_lead_id: trimToMaxLength(prospect.id || "", 140),
+    notes: buildAcquisitionProspectNotes(prospect),
+    created_at: prospect.created_at || nowIso,
+    updated_at: nowIso,
+    last_activity_at: nowIso,
+    dedupe_phone: normalizePhoneForCrmDedupe(phone),
+    dedupe_email: normalizeEmailForCrmDedupe(email),
+  };
+}
+
+function mapAcquisitionProspectToResponse(record = {}) {
+  return {
+    id: trimToMaxLength(record.id || "", 140),
+    businessName: trimToMaxLength(record.business_name || "", 180),
+    category: trimToMaxLength(record.category || "", 160),
+    city: trimToMaxLength(record.city || "", 120),
+    country: trimToMaxLength(record.country || "", 120),
+    address: trimToMaxLength(record.address || "", 240),
+    phone: trimToMaxLength(record.phone || "", 60),
+    website: trimToMaxLength(record.website || "", 500),
+    rating: Number.isFinite(Number(record.rating)) ? Number(record.rating) : 0,
+    reviewsCount: Math.max(0, Math.round(safeNumber(record.reviews_count, 0))),
+    commercialScore: Math.max(0, Math.round(safeNumber(record.commercial_score, 0))),
+    mapsUrl: trimToMaxLength(record.maps_url || "", 500),
+    status: normalizeAcquisitionStatus(record.status),
+    source: trimToMaxLength(record.source || ACQUISITION_SOURCE, 80) || ACQUISITION_SOURCE,
+  };
+}
+
+function prospectMatchesAcquisitionFilters(record = {}, filters = {}) {
+  const normalizedStatus = cleanText(filters.status || "").toLowerCase();
+  if (normalizedStatus && normalizedStatus !== "all" && normalizeAcquisitionStatus(record.status) !== normalizedStatus) {
+    return false;
+  }
+
+  const minScore = parseOptionalMinScore(filters.minScore);
+  if (minScore != null && safeNumber(record.commercial_score, 0) < minScore) {
+    return false;
+  }
+
+  const categoryNeedle = normalizeComparableText(filters.category || "");
+  const cityNeedle = normalizeComparableText(filters.city || "");
+  const countryNeedle = normalizeComparableText(filters.country || "");
+
+  if (categoryNeedle && !normalizeComparableText(record.category || "").includes(categoryNeedle)) return false;
+  if (cityNeedle && !normalizeComparableText(record.city || "").includes(cityNeedle)) return false;
+  if (countryNeedle && !normalizeComparableText(record.country || "").includes(countryNeedle)) return false;
+  return true;
+}
+
+async function requireClientAuth(req, res) {
+  const decoded = await decodeTokenIfPresent(req);
+  if (!decoded?.uid) {
+    res.status(401).json({ error: "Unauthorized" });
+    return null;
+  }
+  return decoded;
+}
+
+async function fetchGoogleAcquisitionPlaces({ category, city, country }) {
+  const apiKey = getGoogleMapsApiKey();
+  if (!apiKey) {
+    const error = new Error("Acquisition search is not configured");
+    error.httpStatus = 500;
+    error.code = "ACQUISITION_NOT_CONFIGURED";
+    throw error;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(ACQUISITION_GOOGLE_TEXT_SEARCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": ACQUISITION_GOOGLE_FIELD_MASK,
+      },
+      body: JSON.stringify({
+        textQuery: buildAcquisitionTextQuery({ category, city, country }),
+      }),
+      signal: controller.signal,
+    });
+
+    const rawText = await response.text();
+    const parsedBody = safeJsonParse(rawText, {});
+    if (!response.ok) {
+      console.error("acquisition google search error", {
+        status: response.status,
+        body: parsedBody && typeof parsedBody === "object" ? parsedBody : rawText.slice(0, 500),
+      });
+      const error = new Error("Google Places search failed");
+      error.httpStatus = 502;
+      throw error;
+    }
+
+    if (!parsedBody || typeof parsedBody !== "object" || !Array.isArray(parsedBody.places)) {
+      return [];
+    }
+
+    return parsedBody.places;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutError = new Error("Google Places search timed out");
+      timeoutError.httpStatus = 502;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeAcquisitionProspectRecord(place = {}, existingRecord = null, searchParams = {}, clientId = "") {
+  const externalId = trimToMaxLength(place.id || "", 180);
+  const id = existingRecord?.id || buildAcquisitionProspectDocId(clientId, externalId);
+  const businessName = trimToMaxLength(place?.displayName?.text || existingRecord?.business_name || "", 180);
+  const category = normalizeAcquisitionCategory(place, existingRecord?.category || searchParams.category || "");
+  const city = extractPlaceAddressComponent(place, ["locality", "postal_town", "administrative_area_level_2"])
+    || trimToMaxLength(existingRecord?.city || searchParams.city || "", 120);
+  const country = extractPlaceAddressComponent(place, ["country"])
+    || trimToMaxLength(existingRecord?.country || searchParams.country || "", 120);
+  const address = trimToMaxLength(place.formattedAddress || existingRecord?.address || "", 240);
+  const phone = sanitizeReadablePhone(
+    place.internationalPhoneNumber || place.nationalPhoneNumber || existingRecord?.phone || "",
+  );
+  const website = sanitizeHttpUrl(place.websiteUri || existingRecord?.website || "", { maxLength: 500 });
+  const rating = Number.isFinite(Number(place.rating))
+    ? Number(Number(place.rating).toFixed(1))
+    : safeNumber(existingRecord?.rating, 0);
+  const reviewsCount = Number.isFinite(Number(place.userRatingCount))
+    ? Math.max(0, Math.round(Number(place.userRatingCount)))
+    : Math.max(0, Math.round(safeNumber(existingRecord?.reviews_count, 0)));
+  const mapsUrl = sanitizeHttpUrl(
+    place.googleMapsUri
+      || existingRecord?.maps_url
+      || buildFallbackMapsUrl({
+        businessName,
+        address,
+        city,
+        country,
+      }),
+    { maxLength: 500 },
+  );
+  const status = normalizeAcquisitionStatus(existingRecord?.status || "pending");
+  const commercialScore = calculateCommercialScore({
+    rating,
+    reviewsCount,
+    phone,
+    website,
+    category,
+    placeTypes: Array.isArray(place.types) ? place.types : [],
+  });
+
+  return {
+    id,
+    client_id: trimToMaxLength(clientId, 140),
+    external_id: externalId,
+    business_name: businessName,
+    category,
+    city,
+    country,
+    address,
+    phone,
+    website,
+    rating,
+    reviews_count: reviewsCount,
+    commercial_score: commercialScore,
+    maps_url: mapsUrl,
+    status,
+    source: ACQUISITION_SOURCE,
+    crm_contact_id: trimToMaxLength(existingRecord?.crm_contact_id || "", 140) || null,
+    created_at: existingRecord?.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function listAcquisitionProspectsByClient(clientId) {
+  const snap = await firestore.collection("acquisition_prospects").where("client_id", "==", clientId).get();
+  return snap.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }));
+}
+
+async function upsertCrmContactFromAcquisitionProspectTx(tx, prospectRecord, clientId) {
+  const incomingContact = buildCrmContactFromAcquisitionProspect(prospectRecord, clientId);
+  const contactsSnap = await tx.get(
+    firestore.collection("crm_contacts").where("client_id", "==", clientId).limit(5000),
+  );
+  const desiredContactId = trimToMaxLength(prospectRecord.crm_contact_id || "", 140);
+  const desiredSourceLeadId = trimToMaxLength(prospectRecord.id || "", 140);
+  const desiredPhone = normalizePhoneForCrmDedupe(incomingContact.phone || "");
+  const desiredEmail = normalizeEmailForCrmDedupe(incomingContact.email || "");
+
+  let matchedDoc = null;
+  for (const docSnap of contactsSnap.docs) {
+    const row = docSnap.data() || {};
+    const rowPhone = normalizePhoneForCrmDedupe(row.dedupe_phone || row.phone || "");
+    const rowEmail = normalizeEmailForCrmDedupe(row.dedupe_email || row.email || "");
+    const rowSourceLeadId = trimToMaxLength(row.source_lead_id || "", 140);
+
+    if (desiredContactId && docSnap.id === desiredContactId) {
+      matchedDoc = docSnap;
+      break;
+    }
+    if (desiredSourceLeadId && rowSourceLeadId === desiredSourceLeadId) {
+      matchedDoc = docSnap;
+      break;
+    }
+    if (desiredPhone && rowPhone && rowPhone === desiredPhone) {
+      matchedDoc = docSnap;
+      break;
+    }
+    if (desiredEmail && rowEmail && rowEmail === desiredEmail) {
+      matchedDoc = docSnap;
+      break;
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  if (!matchedDoc) {
+    const contactRef = desiredContactId
+      ? firestore.collection("crm_contacts").doc(desiredContactId)
+      : firestore.collection("crm_contacts").doc();
+    tx.set(contactRef, incomingContact);
+    tx.set(
+      firestore.collection("activity_events").doc(),
+      {
+        client_id: clientId,
+        entity_type: "contact",
+        entity_id: contactRef.id,
+        type: "contact_created",
+        payload_json: {
+          reason: "acquisition_approval",
+          source: ACQUISITION_CRM_SOURCE,
+          source_lead_id: desiredSourceLeadId || null,
+        },
+        created_at: nowIso,
+        created_by: clientId,
+      },
+      { merge: true },
+    );
+    return {
+      crmContactId: contactRef.id,
+      action: "created",
+    };
+  }
+
+  const mergedContact = mergeCrmContactDataForAcquisition(matchedDoc.data() || {}, incomingContact);
+  tx.set(matchedDoc.ref, mergedContact, { merge: true });
+  tx.set(
+    firestore.collection("activity_events").doc(),
+    {
+      client_id: clientId,
+      entity_type: "contact",
+      entity_id: matchedDoc.id,
+      type: "dedupe_merge",
+      payload_json: {
+        reason: "acquisition_approval",
+        source: ACQUISITION_CRM_SOURCE,
+        source_lead_id: desiredSourceLeadId || null,
+      },
+      created_at: nowIso,
+      created_by: clientId,
+    },
+    { merge: true },
+  );
+  return {
+    crmContactId: matchedDoc.id,
+    action: "merged",
+  };
 }
 
 function safeJsonParse(input, fallback = null) {
@@ -2035,6 +2524,190 @@ app.post("/api/verify-payment", async (req, res) => {
   } catch (error) {
     console.error("verify-payment error", error);
     return res.status(500).json({ error: error?.message || "Internal server error" });
+  }
+});
+
+app.post("/api/acquisition/search", async (req, res) => {
+  const decoded = await requireClientAuth(req, res);
+  if (!decoded?.uid) return;
+
+  const category = trimToMaxLength(req.body?.category || "", 160);
+  const city = trimToMaxLength(req.body?.city || "", 120);
+  const country = trimToMaxLength(req.body?.country || "", 120);
+  const minScore = parseOptionalMinScore(req.body?.minScore);
+
+  if (!category) return res.status(400).json({ error: "category is required" });
+  if (!city) return res.status(400).json({ error: "city is required" });
+  if (req.body?.minScore != null && minScore == null) {
+    return res.status(400).json({ error: "minScore must be a number between 0 and 100" });
+  }
+
+  try {
+    const places = await fetchGoogleAcquisitionPlaces({ category, city, country });
+    const existingProspects = await listAcquisitionProspectsByClient(decoded.uid);
+    const existingByExternalId = new Map();
+    existingProspects.forEach((record) => {
+      const externalId = trimToMaxLength(record.external_id || "", 180);
+      if (externalId) existingByExternalId.set(externalId, record);
+    });
+
+    const nowIso = new Date().toISOString();
+    const batch = firestore.batch();
+    const normalizedRecords = [];
+
+    places.forEach((place) => {
+      const externalId = trimToMaxLength(place?.id || "", 180);
+      if (!externalId) return;
+
+      const existingRecord = existingByExternalId.get(externalId) || null;
+      const normalizedRecord = normalizeAcquisitionProspectRecord(
+        place,
+        existingRecord,
+        { category, city, country },
+        decoded.uid,
+      );
+      normalizedRecord.updated_at = nowIso;
+      normalizedRecord.created_at = existingRecord?.created_at || nowIso;
+
+      batch.set(
+        firestore.collection("acquisition_prospects").doc(normalizedRecord.id),
+        normalizedRecord,
+        { merge: true },
+      );
+      normalizedRecords.push(normalizedRecord);
+    });
+
+    if (normalizedRecords.length > 0) {
+      await batch.commit();
+    }
+
+    const prospects = normalizedRecords
+      .filter((record) => prospectMatchesAcquisitionFilters(record, { minScore }))
+      .sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")))
+      .map((record) => mapAcquisitionProspectToResponse(record));
+
+    return res.status(200).json({ prospects });
+  } catch (error) {
+    console.error("acquisition search error", error);
+    const status = Number.isInteger(error?.httpStatus) ? error.httpStatus : 500;
+    if (error?.code === "ACQUISITION_NOT_CONFIGURED") {
+      return res.status(500).json({ error: "Acquisition search is not configured" });
+    }
+    return res.status(status).json({ error: "Unable to search acquisition prospects right now" });
+  }
+});
+
+app.get("/api/acquisition/prospects", async (req, res) => {
+  const decoded = await requireClientAuth(req, res);
+  if (!decoded?.uid) return;
+
+  const statusFilter = cleanText(req.query?.status || "").toLowerCase();
+  const category = trimToMaxLength(req.query?.category || "", 160);
+  const city = trimToMaxLength(req.query?.city || "", 120);
+  const country = trimToMaxLength(req.query?.country || "", 120);
+  const minScore = parseOptionalMinScore(req.query?.minScore);
+
+  if (statusFilter && statusFilter !== "all" && !ACQUISITION_STATUSES.has(statusFilter)) {
+    return res.status(400).json({ error: "status must be pending, approved or discarded" });
+  }
+  if (req.query?.minScore != null && String(req.query.minScore).trim() !== "" && minScore == null) {
+    return res.status(400).json({ error: "minScore must be a number between 0 and 100" });
+  }
+
+  try {
+    const prospects = await listAcquisitionProspectsByClient(decoded.uid);
+    const filtered = prospects
+      .filter((record) => prospectMatchesAcquisitionFilters(record, {
+        status: statusFilter,
+        category,
+        city,
+        country,
+        minScore,
+      }))
+      .sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")))
+      .map((record) => mapAcquisitionProspectToResponse(record));
+
+    return res.status(200).json({ prospects: filtered });
+  } catch (error) {
+    console.error("acquisition prospects list error", error);
+    return res.status(500).json({ error: "Failed to load acquisition prospects" });
+  }
+});
+
+app.patch("/api/acquisition/prospects", async (req, res) => {
+  const decoded = await requireClientAuth(req, res);
+  if (!decoded?.uid) return;
+
+  const prospectId = trimToMaxLength(req.body?.id || "", 140);
+  const nextStatus = cleanText(req.body?.status || "").toLowerCase();
+  if (!prospectId) return res.status(400).json({ error: "id is required" });
+  if (!ACQUISITION_OPERATION_STATUSES.has(nextStatus)) {
+    return res.status(400).json({ error: "status must be approved or discarded" });
+  }
+
+  try {
+    let responsePayload = null;
+
+    await firestore.runTransaction(async (tx) => {
+      const prospectRef = firestore.collection("acquisition_prospects").doc(prospectId);
+      const prospectSnap = await tx.get(prospectRef);
+      if (!prospectSnap.exists) {
+        const error = new Error("Prospect not found");
+        error.httpStatus = 404;
+        throw error;
+      }
+
+      const currentProspect = { id: prospectSnap.id, ...(prospectSnap.data() || {}) };
+      if (trimToMaxLength(currentProspect.client_id || "", 140) !== decoded.uid) {
+        const error = new Error("Prospect not found");
+        error.httpStatus = 404;
+        throw error;
+      }
+
+      const currentStatus = normalizeAcquisitionStatus(currentProspect.status);
+      if (currentStatus === "approved" && nextStatus === "discarded") {
+        const error = new Error("Approved prospects cannot be discarded");
+        error.httpStatus = 400;
+        throw error;
+      }
+
+      const nowIso = new Date().toISOString();
+      let crmResult = {
+        crmContactId: trimToMaxLength(currentProspect.crm_contact_id || "", 140) || null,
+        action: "noop",
+      };
+      let updatedProspect = {
+        ...currentProspect,
+        status: nextStatus,
+        updated_at: nowIso,
+      };
+
+      if (nextStatus === "approved") {
+        crmResult = await upsertCrmContactFromAcquisitionProspectTx(tx, updatedProspect, decoded.uid);
+        updatedProspect = {
+          ...updatedProspect,
+          crm_contact_id: crmResult.crmContactId,
+        };
+      }
+
+      tx.set(prospectRef, updatedProspect, { merge: true });
+      responsePayload = {
+        success: true,
+        prospect: mapAcquisitionProspectToResponse(updatedProspect),
+        crmContactId: updatedProspect.crm_contact_id || null,
+        crm_contact_id: updatedProspect.crm_contact_id || null,
+        action: crmResult.action,
+      };
+    });
+
+    return res.status(200).json(responsePayload || { success: true });
+  } catch (error) {
+    console.error("acquisition prospect patch error", error);
+    const status = Number.isInteger(error?.httpStatus) ? error.httpStatus : 500;
+    if (status !== 500) {
+      return res.status(status).json({ error: error?.message || "Failed to update acquisition prospect" });
+    }
+    return res.status(500).json({ error: "Failed to update acquisition prospect" });
   }
 });
 
