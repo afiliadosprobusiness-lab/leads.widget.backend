@@ -181,7 +181,7 @@ Base detectada:
 - Backend externo: `leads.widget.backend/src/index.js`
 - Capa publica en frontend: rutas relativas `/api/*` consumidas por frontend y widget.
 
-### Backend externo (Cloud Run / Express)
+### Backend externo (Cloud Run/Railway / Express)
 
 #### `GET /health`
 
@@ -510,7 +510,7 @@ Codigo observado:
 - `POST|OPTIONS /api/verify-payment` (proxy a backend externo)
 - `GET /api/w/:widgetId.js` (proxy a backend externo)
 - `GET /api/debug` (verifica acceso Firebase Admin; retorna `status/env`, y en error incluye `stack`)
-- `vercel.json` define rewrite global: `/api/(.*)` -> backend externo Cloud Run
+- `vercel.json`/proxy publico define fallback global `/api/(.*)` hacia el backend externo; el host puede ser Cloud Run o Railway sin cambiar el contrato HTTP
 
 Asuncion:
 

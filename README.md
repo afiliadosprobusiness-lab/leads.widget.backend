@@ -45,6 +45,36 @@ Health check:
 curl http://localhost:8080/health
 ```
 
+## Deploy en Railway
+
+`railway.json` fija el builder `DOCKERFILE` y usa `GET /health` como healthcheck para mantener el runtime alineado con produccion.
+
+Pasos recomendados:
+
+```bash
+railway init -n leads-widget-backend
+railway up
+railway domain
+```
+
+Variables obligatorias a cargar en Railway:
+
+- `FIREBASE_SERVICE_ACCOUNT`
+- `OPENAI_API_KEY`
+- `GOOGLE_MAPS_API_KEY`
+- `PAYPAL_CLIENT_ID`
+- `PAYPAL_CLIENT_SECRET`
+- `PAYPAL_ENV`
+- `CORS_ORIGINS`
+- `PUBLIC_APP_URL`
+- `WIDGET_EMBED_URL`
+- `ALLOW_INSECURE_VERIFY_PAYMENT`
+- `IACLOSER_API_URL`
+- `IACLOSER_API_KEY`
+- `IACLOSER_DEFAULT_REDIRECT_URL`
+
+Si el frontend `leads.widget` consume este backend por Vercel, el upstream debe configurarse via `BACKEND_URL` en ese proyecto para evitar hardcodes de hosting.
+
 ## Deploy en Cloud Run
 
 ```bash

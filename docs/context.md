@@ -9,6 +9,7 @@ Snapshot derivado del codigo real del repo al 2026-03-20.
 - Firebase Admin SDK para Auth y Firestore
 - OpenAI SDK para flujos IA
 - Integraciones HTTP salientes con PayPal, IACloser y Google Places API
+- Deploy portable a contenedor (`Dockerfile`) con compatibilidad operativa para Cloud Run y Railway
 
 ## Estructura real observada
 

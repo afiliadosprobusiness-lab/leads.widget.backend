@@ -22,7 +22,7 @@ Actualizacion de objetivo (2026-03-20):
 - Framework: Express
 - Auth/DB: Firebase Admin SDK (Auth + Firestore)
 - IA: OpenAI SDK
-- Deploy: Cloud Run
+- Deploy: Cloud Run y Railway (contenedor Docker)
 
 ## Arquitectura (decisiones clave)
 - Servicio stateless con Firestore como persistencia.
@@ -143,6 +143,7 @@ Actualizacion de objetivo (2026-03-20):
 - `IACLOSER_DEFAULT_REDIRECT_URL` (fallback de redireccion post-handoff)
 - Si `IACLOSER_API_URL` no esta configurada, el backend usa por defecto `https://ai-call-closer-saas.vercel.app/api/leads/handoff`.
 - Para entornos preview/staging se recomienda sobreescribir `IACLOSER_API_URL` con el dominio preview correspondiente.
+- Para Railway, el repo incluye `railway.json` para forzar builder `DOCKERFILE` y healthcheck `/health` sin alterar contratos HTTP.
 
 ## Integracion IACloser (objetivo operativo)
 - El backend debe enviar a IACloser, via API HTTP JSON, el contexto recopilado del lead durante el chat.
