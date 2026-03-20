@@ -1,6 +1,6 @@
 # Contexto Arquitectonico - leads.widget.backend
 
-Snapshot derivado del codigo real del repo al 2026-03-18.
+Snapshot derivado del codigo real del repo al 2026-03-20.
 
 ## Runtime y stack
 
@@ -65,6 +65,21 @@ Reglas implementadas:
 - `commercial_score` calculado solo server-side
 - Al aprobar, el prospect crea o mergea un contacto en `crm_contacts` con `source = acquisition_google_places`
 - La respuesta publica del modulo Acquisition se mapea a camelCase para mantener compatibilidad con la UI actual
+
+### CRM (2026-03-20)
+
+- `GET /api/crm/contacts`
+- `GET /api/crm/contacts/:contactId`
+- `POST /api/crm/contacts`
+- `PATCH /api/crm/contacts/:contactId`
+
+Reglas implementadas:
+
+- Persistencia y lectura reales sobre `crm_contacts`
+- Scope server-side por `client_id = decoded.uid`
+- `POST /api/crm/contacts` hace dedupe por telefono/email dentro del tenant y mergea cuando corresponde
+- `PATCH /api/crm/contacts/:contactId` rechaza colisiones de telefono/email contra otros contactos del mismo tenant
+- Las mutaciones CRM registran trazabilidad en `activity_events`
 
 ## Integraciones externas observadas
 

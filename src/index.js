@@ -26,6 +26,9 @@ const DEFAULT_IACLOSER_API_URL = "https://ai-call-closer-saas.vercel.app/api/lea
 const ACQUISITION_STATUSES = new Set(["pending", "approved", "discarded"]);
 const ACQUISITION_OPERATION_STATUSES = new Set(["approved", "discarded"]);
 const CRM_STAGES = new Set(["new", "contacted", "qualified", "won", "lost"]);
+const CRM_MANUAL_SOURCE = "crm_manual";
+const MAX_CRM_CONTACTS_LIST_LIMIT = 200;
+const CRM_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ACQUISITION_SOURCE = "google_places";
 const ACQUISITION_CRM_SOURCE = "acquisition_google_places";
 const ACQUISITION_GOOGLE_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
@@ -456,6 +459,89 @@ function buildCrmContactFromAcquisitionProspect(prospect, clientId) {
     dedupe_phone: normalizePhoneForCrmDedupe(phone),
     dedupe_email: normalizeEmailForCrmDedupe(email),
   };
+}
+
+function normalizeCrmStage(value, fallback = "new") {
+  const normalized = cleanText(value).toLowerCase();
+  return CRM_STAGES.has(normalized) ? normalized : fallback;
+}
+
+function sanitizeCrmEmail(value) {
+  const normalized = cleanText(value).toLowerCase();
+  if (!normalized) return "";
+  if (normalized.length > 180) return null;
+  return CRM_EMAIL_RE.test(normalized) ? normalized : null;
+}
+
+function sanitizeCrmPhone(value) {
+  const normalized = cleanText(value);
+  if (!normalized) return "";
+  return sanitizeReadablePhone(normalized) || null;
+}
+
+function mergeManualCrmContactData(base = {}, incoming = {}) {
+  const baseName = trimToMaxLength(base.name || "", 180);
+  const incomingName = trimToMaxLength(incoming.name || "", 180);
+  const basePhone = trimToMaxLength(base.phone || "", 60);
+  const incomingPhone = trimToMaxLength(incoming.phone || "", 60);
+  const baseEmail = normalizeEmailForCrmDedupe(base.email || "");
+  const incomingEmail = normalizeEmailForCrmDedupe(incoming.email || "");
+  const baseInterest = trimToMaxLength(base.interest || "", 300);
+  const incomingInterest = trimToMaxLength(incoming.interest || "", 300);
+  const baseLeadId = trimToMaxLength(base.source_lead_id || "", 140);
+  const incomingLeadId = trimToMaxLength(incoming.source_lead_id || "", 140);
+  const baseNotes = trimToMaxLength(base.notes || "", 1600);
+  const incomingNotes = trimToMaxLength(incoming.notes || "", 1600);
+  const baseStage = normalizeCrmStage(base.stage, "new");
+  const incomingStage = normalizeCrmStage(incoming.stage, baseStage);
+  const baseSource = trimToMaxLength(base.source || "", 80);
+  const incomingSource = trimToMaxLength(incoming.source || "", 80);
+  const nowIso = new Date().toISOString();
+
+  let notes = baseNotes || incomingNotes;
+  if (baseNotes && incomingNotes && baseNotes !== incomingNotes) {
+    notes = `${baseNotes}\n${incomingNotes}`.slice(0, 1600);
+  }
+
+  return {
+    client_id: trimToMaxLength(base.client_id || incoming.client_id || "", 140),
+    name: baseName || incomingName || "Sin nombre",
+    phone: basePhone || incomingPhone,
+    email: baseEmail || incomingEmail,
+    interest: incomingInterest || baseInterest,
+    stage: incomingStage || baseStage,
+    source: baseSource || incomingSource || CRM_MANUAL_SOURCE,
+    source_lead_id: baseLeadId || incomingLeadId,
+    notes,
+    created_at: base.created_at || incoming.created_at || nowIso,
+    updated_at: nowIso,
+    last_activity_at: nowIso,
+    dedupe_phone: normalizePhoneForCrmDedupe(basePhone || incomingPhone),
+    dedupe_email: normalizeEmailForCrmDedupe(baseEmail || incomingEmail),
+  };
+}
+
+function mapCrmContactToResponse(record = {}) {
+  return {
+    id: trimToMaxLength(record.id || "", 140),
+    name: trimToMaxLength(record.name || "", 180),
+    phone: trimToMaxLength(record.phone || "", 60),
+    email: normalizeEmailForCrmDedupe(record.email || ""),
+    interest: trimToMaxLength(record.interest || "", 300),
+    stage: normalizeCrmStage(record.stage, "new"),
+    source: trimToMaxLength(record.source || CRM_MANUAL_SOURCE, 80) || CRM_MANUAL_SOURCE,
+    sourceLeadId: trimToMaxLength(record.source_lead_id || "", 140) || null,
+    notes: trimToMaxLength(record.notes || "", 1600),
+    createdAt: record.created_at || null,
+    updatedAt: record.updated_at || null,
+    lastActivityAt: record.last_activity_at || record.updated_at || record.created_at || null,
+  };
+}
+
+function sortCrmContacts(records = []) {
+  return [...records].sort((left, right) =>
+    String(right.last_activity_at || right.updated_at || right.created_at || "")
+      .localeCompare(String(left.last_activity_at || left.updated_at || left.created_at || "")));
 }
 
 function mapAcquisitionProspectToResponse(record = {}) {
@@ -2524,6 +2610,345 @@ app.post("/api/verify-payment", async (req, res) => {
   } catch (error) {
     console.error("verify-payment error", error);
     return res.status(500).json({ error: error?.message || "Internal server error" });
+  }
+});
+
+app.get("/api/crm/contacts", async (req, res) => {
+  const decoded = await requireClientAuth(req, res);
+  if (!decoded?.uid) return;
+
+  const stage = cleanText(req.query?.stage || "").toLowerCase();
+  const source = trimToMaxLength(req.query?.source || "", 80).toLowerCase();
+  const search = normalizeComparableText(req.query?.q || "");
+  const requestedLimit = Number(req.query?.limit || 100);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(1, Math.round(requestedLimit)), MAX_CRM_CONTACTS_LIST_LIMIT)
+    : 100;
+
+  if (stage && stage !== "all" && !CRM_STAGES.has(stage)) {
+    return res.status(400).json({ error: "stage must be new, contacted, qualified, won or lost" });
+  }
+
+  try {
+    const snap = await firestore.collection("crm_contacts").where("client_id", "==", decoded.uid).get();
+    const contacts = sortCrmContacts(
+      snap.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) })),
+    ).filter((contact) => {
+      if (stage && stage !== "all" && normalizeCrmStage(contact.stage) !== stage) return false;
+      if (source && normalizeComparableText(contact.source || "") !== normalizeComparableText(source)) return false;
+      if (!search) return true;
+
+      const haystack = [
+        contact.name,
+        contact.phone,
+        contact.email,
+        contact.interest,
+        contact.notes,
+      ].map((value) => normalizeComparableText(value || ""));
+
+      return haystack.some((value) => value.includes(search));
+    });
+
+    return res.status(200).json({
+      contacts: contacts.slice(0, limit).map((contact) => mapCrmContactToResponse(contact)),
+      total: contacts.length,
+    });
+  } catch (error) {
+    console.error("crm contacts list error", error);
+    return res.status(500).json({ error: "Failed to load CRM contacts" });
+  }
+});
+
+app.get("/api/crm/contacts/:contactId", async (req, res) => {
+  const decoded = await requireClientAuth(req, res);
+  if (!decoded?.uid) return;
+
+  const contactId = trimToMaxLength(req.params?.contactId || "", 140);
+  if (!contactId) return res.status(400).json({ error: "contactId is required" });
+
+  try {
+    const contactSnap = await firestore.collection("crm_contacts").doc(contactId).get();
+    if (!contactSnap.exists) {
+      return res.status(404).json({ error: "CRM contact not found" });
+    }
+
+    const contact = { id: contactSnap.id, ...(contactSnap.data() || {}) };
+    if (trimToMaxLength(contact.client_id || "", 140) !== decoded.uid) {
+      return res.status(404).json({ error: "CRM contact not found" });
+    }
+
+    return res.status(200).json({ contact: mapCrmContactToResponse(contact) });
+  } catch (error) {
+    console.error("crm contact get error", error);
+    return res.status(500).json({ error: "Failed to load CRM contact" });
+  }
+});
+
+app.post("/api/crm/contacts", async (req, res) => {
+  const decoded = await requireClientAuth(req, res);
+  if (!decoded?.uid) return;
+
+  const name = trimToMaxLength(req.body?.name || "", 180);
+  const rawPhone = req.body?.phone;
+  const rawEmail = req.body?.email;
+  const interest = trimToMaxLength(req.body?.interest || "", 300);
+  const notes = trimToMaxLength(req.body?.notes || "", 1600);
+  const requestedStage = cleanText(req.body?.stage || "");
+  const requestedSource = trimToMaxLength(req.body?.source || "", 80);
+  const phone = sanitizeCrmPhone(rawPhone);
+  const email = sanitizeCrmEmail(rawEmail);
+
+  if (!name) return res.status(400).json({ error: "name is required" });
+  if (rawPhone != null && phone == null) {
+    return res.status(400).json({ error: "phone must be a valid phone number" });
+  }
+  if (rawEmail != null && email == null) {
+    return res.status(400).json({ error: "email must be a valid email address" });
+  }
+  if (requestedStage && !CRM_STAGES.has(requestedStage.toLowerCase())) {
+    return res.status(400).json({ error: "stage must be new, contacted, qualified, won or lost" });
+  }
+
+  try {
+    let responsePayload = null;
+
+    await firestore.runTransaction(async (tx) => {
+      const contactsSnap = await tx.get(
+        firestore.collection("crm_contacts").where("client_id", "==", decoded.uid).limit(5000),
+      );
+
+      const normalizedPhone = normalizePhoneForCrmDedupe(phone || "");
+      const normalizedEmail = normalizeEmailForCrmDedupe(email || "");
+      let matchedDoc = null;
+
+      for (const docSnap of contactsSnap.docs) {
+        const row = docSnap.data() || {};
+        const rowPhone = normalizePhoneForCrmDedupe(row.dedupe_phone || row.phone || "");
+        const rowEmail = normalizeEmailForCrmDedupe(row.dedupe_email || row.email || "");
+
+        if (normalizedPhone && rowPhone === normalizedPhone) {
+          matchedDoc = docSnap;
+          break;
+        }
+        if (normalizedEmail && rowEmail === normalizedEmail) {
+          matchedDoc = docSnap;
+          break;
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      const incomingRecord = {
+        client_id: decoded.uid,
+        name,
+        phone: phone || "",
+        email: email || "",
+        interest,
+        stage: normalizeCrmStage(requestedStage, "new"),
+        source: requestedSource || CRM_MANUAL_SOURCE,
+        notes,
+        created_at: nowIso,
+        updated_at: nowIso,
+        last_activity_at: nowIso,
+        dedupe_phone: normalizedPhone,
+        dedupe_email: normalizedEmail,
+      };
+
+      if (!matchedDoc) {
+        const contactRef = firestore.collection("crm_contacts").doc();
+        tx.set(contactRef, incomingRecord);
+        tx.set(
+          firestore.collection("activity_events").doc(),
+          {
+            client_id: decoded.uid,
+            entity_type: "contact",
+            entity_id: contactRef.id,
+            type: "contact_created",
+            payload_json: {
+              reason: "crm_manual_create",
+              source: incomingRecord.source,
+            },
+            created_at: nowIso,
+            created_by: decoded.uid,
+          },
+          { merge: true },
+        );
+
+        responsePayload = {
+          success: true,
+          contact: mapCrmContactToResponse({ id: contactRef.id, ...incomingRecord }),
+          action: "created",
+        };
+        return;
+      }
+
+      const mergedContact = mergeManualCrmContactData(matchedDoc.data() || {}, incomingRecord);
+      tx.set(matchedDoc.ref, mergedContact, { merge: true });
+      tx.set(
+        firestore.collection("activity_events").doc(),
+        {
+          client_id: decoded.uid,
+          entity_type: "contact",
+          entity_id: matchedDoc.id,
+          type: "dedupe_merge",
+          payload_json: {
+            reason: "crm_manual_create",
+            source: mergedContact.source,
+          },
+          created_at: nowIso,
+          created_by: decoded.uid,
+        },
+        { merge: true },
+      );
+
+      responsePayload = {
+        success: true,
+        contact: mapCrmContactToResponse({ id: matchedDoc.id, ...mergedContact }),
+        action: "merged",
+      };
+    });
+
+    return res.status(200).json(responsePayload || { success: true });
+  } catch (error) {
+    console.error("crm contact create error", error);
+    return res.status(500).json({ error: "Failed to create CRM contact" });
+  }
+});
+
+app.patch("/api/crm/contacts/:contactId", async (req, res) => {
+  const decoded = await requireClientAuth(req, res);
+  if (!decoded?.uid) return;
+
+  const contactId = trimToMaxLength(req.params?.contactId || "", 140);
+  if (!contactId) return res.status(400).json({ error: "contactId is required" });
+
+  const providedFields = ["name", "phone", "email", "interest", "stage", "notes"]
+    .filter((field) => Object.prototype.hasOwnProperty.call(req.body || {}, field));
+  if (providedFields.length === 0) {
+    return res.status(400).json({ error: "At least one CRM contact field must be provided" });
+  }
+
+  const rawName = Object.prototype.hasOwnProperty.call(req.body || {}, "name")
+    ? trimToMaxLength(req.body?.name || "", 180)
+    : null;
+  const rawPhonePresent = Object.prototype.hasOwnProperty.call(req.body || {}, "phone");
+  const rawEmailPresent = Object.prototype.hasOwnProperty.call(req.body || {}, "email");
+  const rawInterest = Object.prototype.hasOwnProperty.call(req.body || {}, "interest")
+    ? trimToMaxLength(req.body?.interest || "", 300)
+    : null;
+  const rawNotes = Object.prototype.hasOwnProperty.call(req.body || {}, "notes")
+    ? trimToMaxLength(req.body?.notes || "", 1600)
+    : null;
+  const rawStage = Object.prototype.hasOwnProperty.call(req.body || {}, "stage")
+    ? cleanText(req.body?.stage || "").toLowerCase()
+    : null;
+  const nextPhone = rawPhonePresent ? sanitizeCrmPhone(req.body?.phone) : null;
+  const nextEmail = rawEmailPresent ? sanitizeCrmEmail(req.body?.email) : null;
+
+  if (rawName != null && !rawName) return res.status(400).json({ error: "name cannot be empty" });
+  if (rawPhonePresent && nextPhone == null) {
+    return res.status(400).json({ error: "phone must be a valid phone number" });
+  }
+  if (rawEmailPresent && nextEmail == null) {
+    return res.status(400).json({ error: "email must be a valid email address" });
+  }
+  if (rawStage != null && !CRM_STAGES.has(rawStage)) {
+    return res.status(400).json({ error: "stage must be new, contacted, qualified, won or lost" });
+  }
+
+  try {
+    let responsePayload = null;
+
+    await firestore.runTransaction(async (tx) => {
+      const contactRef = firestore.collection("crm_contacts").doc(contactId);
+      const contactSnap = await tx.get(contactRef);
+      if (!contactSnap.exists) {
+        const error = new Error("CRM contact not found");
+        error.httpStatus = 404;
+        throw error;
+      }
+
+      const currentContact = { id: contactSnap.id, ...(contactSnap.data() || {}) };
+      if (trimToMaxLength(currentContact.client_id || "", 140) !== decoded.uid) {
+        const error = new Error("CRM contact not found");
+        error.httpStatus = 404;
+        throw error;
+      }
+
+      const desiredPhone = rawPhonePresent
+        ? normalizePhoneForCrmDedupe(nextPhone || "")
+        : normalizePhoneForCrmDedupe(currentContact.dedupe_phone || currentContact.phone || "");
+      const desiredEmail = rawEmailPresent
+        ? normalizeEmailForCrmDedupe(nextEmail || "")
+        : normalizeEmailForCrmDedupe(currentContact.dedupe_email || currentContact.email || "");
+
+      if (desiredPhone || desiredEmail) {
+        const contactsSnap = await tx.get(
+          firestore.collection("crm_contacts").where("client_id", "==", decoded.uid).limit(5000),
+        );
+        for (const docSnap of contactsSnap.docs) {
+          if (docSnap.id === contactId) continue;
+          const row = docSnap.data() || {};
+          const rowPhone = normalizePhoneForCrmDedupe(row.dedupe_phone || row.phone || "");
+          const rowEmail = normalizeEmailForCrmDedupe(row.dedupe_email || row.email || "");
+          if (desiredPhone && rowPhone === desiredPhone) {
+            const error = new Error("Another CRM contact already uses that phone number");
+            error.httpStatus = 409;
+            throw error;
+          }
+          if (desiredEmail && rowEmail === desiredEmail) {
+            const error = new Error("Another CRM contact already uses that email address");
+            error.httpStatus = 409;
+            throw error;
+          }
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      const updatedContact = {
+        ...currentContact,
+        name: rawName ?? currentContact.name ?? "Sin nombre",
+        phone: rawPhonePresent ? (nextPhone || "") : trimToMaxLength(currentContact.phone || "", 60),
+        email: rawEmailPresent ? (nextEmail || "") : normalizeEmailForCrmDedupe(currentContact.email || ""),
+        interest: rawInterest ?? trimToMaxLength(currentContact.interest || "", 300),
+        stage: rawStage != null ? rawStage : normalizeCrmStage(currentContact.stage, "new"),
+        notes: rawNotes ?? trimToMaxLength(currentContact.notes || "", 1600),
+        updated_at: nowIso,
+        last_activity_at: nowIso,
+      };
+      updatedContact.dedupe_phone = normalizePhoneForCrmDedupe(updatedContact.phone || "");
+      updatedContact.dedupe_email = normalizeEmailForCrmDedupe(updatedContact.email || "");
+
+      tx.set(contactRef, updatedContact, { merge: true });
+      tx.set(
+        firestore.collection("activity_events").doc(),
+        {
+          client_id: decoded.uid,
+          entity_type: "contact",
+          entity_id: contactId,
+          type: "contact_updated",
+          payload_json: {
+            fields: providedFields,
+          },
+          created_at: nowIso,
+          created_by: decoded.uid,
+        },
+        { merge: true },
+      );
+
+      responsePayload = {
+        success: true,
+        contact: mapCrmContactToResponse({ id: contactId, ...updatedContact }),
+      };
+    });
+
+    return res.status(200).json(responsePayload || { success: true });
+  } catch (error) {
+    console.error("crm contact patch error", error);
+    const status = Number.isInteger(error?.httpStatus) ? error.httpStatus : 500;
+    if (status !== 500) {
+      return res.status(status).json({ error: error?.message || "Failed to update CRM contact" });
+    }
+    return res.status(500).json({ error: "Failed to update CRM contact" });
   }
 });
 

@@ -13,6 +13,10 @@ Actualizacion de objetivo (2026-03-18):
 - Buscar prospects desde Google Places API, persistirlos por tenant y permitir aprobar/descartar desde backend.
 - Al aprobar un prospect, crear o mergear un contacto en `crm_contacts` con `source = acquisition_google_places`.
 
+Actualizacion de objetivo (2026-03-20):
+- Activar backend real para la pestana `CRM` del dashboard.
+- Exponer `crm_contacts` via API autenticada para listar, consultar, crear y actualizar contactos por tenant.
+
 ## Tech Stack
 - Runtime: Node.js >= 20
 - Framework: Express
@@ -29,6 +33,11 @@ Actualizacion de objetivo (2026-03-18):
   - Dedupe fuerte por `client_id + external_id` usando doc id deterministico.
   - Respuesta publica mapeada a camelCase para no romper la UI actual de `leads.widget`.
   - Aprobacion crea o mergea contacto en `crm_contacts` sin crear deals ni tasks automaticas.
+- Modulo `CRM` server-side:
+  - Endpoints autenticados via Bearer Firebase con tenancy por `client_id`.
+  - Persistencia real sobre `crm_contacts`.
+  - Alta manual con dedupe por telefono/email y merge no destructivo dentro del tenant.
+  - Actualizacion con validacion de colisiones de telefono/email y trazabilidad en `activity_events`.
 - White-label reforzado server-side:
   - Plan `pro` (30): no puede ocultar marca.
   - Plan `plus` (60): permite `hide_branding`, `branding_text` y `branding_link` custom.
@@ -79,6 +88,11 @@ Actualizacion de objetivo (2026-03-18):
   - `POST /api/acquisition/search`
   - `GET /api/acquisition/prospects`
   - `PATCH /api/acquisition/prospects`
+- CRM:
+  - `GET /api/crm/contacts`
+  - `GET /api/crm/contacts/:contactId`
+  - `POST /api/crm/contacts`
+  - `PATCH /api/crm/contacts/:contactId`
 - Partner:
   - `GET /api/partners/me`
   - `GET /api/partners/overview`

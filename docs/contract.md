@@ -90,6 +90,31 @@ Se escriben desde dos flujos (schema heterogeneo):
 - Flujo widget embebido via Firestore REST:
   - `client_id`, `name`, `phone`, `interest`, `source`, `status`, `created_at` (timestamp)
 
+### `crm_contacts`
+
+Contactos CRM scopeados por tenant:
+
+- `client_id`
+- `name`
+- `phone`
+- `email`
+- `interest`
+- `stage` (`new` | `contacted` | `qualified` | `won` | `lost`)
+- `source`
+- `source_lead_id`
+- `notes`
+- `created_at`
+- `updated_at`
+- `last_activity_at`
+- `dedupe_phone`
+- `dedupe_email`
+
+Reglas observadas:
+
+- dedupe por tenant usando `phone/email` normalizados
+- contactos creados desde Acquisition usan `source = acquisition_google_places`
+- contactos creados manualmente por API usan `source = crm_manual` salvo override explicito
+
 ### `acquisition_prospects`
 
 Coleccion nueva para la pestana `Adquisicion`, scopeada por tenant:
@@ -353,6 +378,88 @@ Base detectada:
 - `status`
 - `source`
 
+#### `GET /api/crm/contacts`
+
+- Headers:
+  - `Authorization: Bearer <Firebase ID token>` (requerido)
+- Query params opcionales:
+  - `stage`
+  - `source`
+  - `q`
+  - `limit` (1..200, default 100)
+- Respuestas:
+  - `200`: `{ contacts: CrmContactResponse[], total: number }`
+  - `400`: `{ error: "stage must be new, contacted, qualified, won or lost" }`
+  - `401`: `{ error: "Unauthorized" }`
+  - `500`: `{ error: "Failed to load CRM contacts" }`
+
+#### `GET /api/crm/contacts/:contactId`
+
+- Headers:
+  - `Authorization: Bearer <Firebase ID token>` (requerido)
+- Respuestas:
+  - `200`: `{ contact: CrmContactResponse }`
+  - `400`: `{ error: "contactId is required" }`
+  - `401`: `{ error: "Unauthorized" }`
+  - `404`: `{ error: "CRM contact not found" }`
+  - `500`: `{ error: "Failed to load CRM contact" }`
+
+#### `POST /api/crm/contacts`
+
+- Headers:
+  - `Authorization: Bearer <Firebase ID token>` (requerido)
+- Body JSON:
+  - Requerido: `name`
+  - Opcionales: `phone`, `email`, `interest`, `stage`, `notes`, `source`
+- Restricciones:
+  - `phone`, si se envia, debe ser un telefono valido
+  - `email`, si se envia, debe ser un email valido
+  - `stage` solo acepta `new`, `contacted`, `qualified`, `won`, `lost`
+- Comportamiento:
+  - crea contacto real en `crm_contacts`
+  - si `phone` o `email` coincide con otro contacto del mismo tenant, mergea en vez de duplicar
+  - registra evento en `activity_events`
+- Respuestas:
+  - `200`: `{ success: true, contact: CrmContactResponse, action: "created" | "merged" }`
+  - `400`: `{ error: "name is required" | "phone must be a valid phone number" | "email must be a valid email address" | "stage must be new, contacted, qualified, won or lost" }`
+  - `401`: `{ error: "Unauthorized" }`
+  - `500`: `{ error: "Failed to create CRM contact" }`
+
+#### `PATCH /api/crm/contacts/:contactId`
+
+- Headers:
+  - `Authorization: Bearer <Firebase ID token>` (requerido)
+- Body JSON:
+  - Al menos uno de: `name`, `phone`, `email`, `interest`, `stage`, `notes`
+- Restricciones:
+  - `name` no puede quedar vacio si se envia
+  - `phone`, si se envia, debe ser valido
+  - `email`, si se envia, debe ser valido
+  - `stage`, si se envia, solo acepta `new`, `contacted`, `qualified`, `won`, `lost`
+  - rechaza colisiones de `phone/email` con otros contactos del mismo tenant
+- Respuestas:
+  - `200`: `{ success: true, contact: CrmContactResponse }`
+  - `400`: `{ error: "contactId is required" | "At least one CRM contact field must be provided" | "name cannot be empty" | "phone must be a valid phone number" | "email must be a valid email address" | "stage must be new, contacted, qualified, won or lost" }`
+  - `401`: `{ error: "Unauthorized" }`
+  - `404`: `{ error: "CRM contact not found" }`
+  - `409`: `{ error: "Another CRM contact already uses that phone number" | "Another CRM contact already uses that email address" }`
+  - `500`: `{ error: "Failed to update CRM contact" }`
+
+`CrmContactResponse` observado:
+
+- `id`
+- `name`
+- `phone`
+- `email`
+- `interest`
+- `stage`
+- `source`
+- `sourceLeadId`
+- `notes`
+- `createdAt`
+- `updatedAt`
+- `lastActivityAt`
+
 #### `GET /api/widget-config/:identity`
 
 - Path param:
@@ -482,6 +589,10 @@ Cambios de comportamiento relevantes:
 - `PUT /api/partners/branding` acepta `branding_text` y `branding_link` (manteniendo compatibilidad con `agency_name`/`cta_url`).
 
 ### Changelog del Contrato
+- Fecha: 2026-03-20
+- Cambio: agregado backend real de CRM con `GET /api/crm/contacts`, `GET /api/crm/contacts/:contactId`, `POST /api/crm/contacts` y `PATCH /api/crm/contacts/:contactId` sobre `crm_contacts`
+- Tipo: non-breaking
+- Impacto: el dashboard puede dejar de depender de mocks/client state para el modulo CRM y usar persistencia real por tenant
 - Fecha: 2026-03-18
 - Cambio: agregado backend `Acquisition` con `POST /api/acquisition/search`, `GET /api/acquisition/prospects`, `PATCH /api/acquisition/prospects`, persistencia en `acquisition_prospects` e integracion con `crm_contacts`
 - Tipo: non-breaking

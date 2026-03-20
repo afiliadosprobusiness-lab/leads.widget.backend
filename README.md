@@ -8,6 +8,13 @@ Backend externo para Lead Widget con contratos compatibles de Vercel API.
 - `POST /api/chat`
 - `POST /api/track`
 - `POST /api/verify-payment`
+- `POST /api/acquisition/search`
+- `GET /api/acquisition/prospects`
+- `PATCH /api/acquisition/prospects`
+- `GET /api/crm/contacts`
+- `GET /api/crm/contacts/:contactId`
+- `POST /api/crm/contacts`
+- `PATCH /api/crm/contacts/:contactId`
 - `GET /api/w/:widgetId.js`
 
 ## Variables de entorno
